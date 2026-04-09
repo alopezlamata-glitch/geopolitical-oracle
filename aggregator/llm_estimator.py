@@ -16,85 +16,21 @@ from pipeline.clusterer import ClusterResult
 logger = logging.getLogger(__name__)
 
 _DEFAULT_OLLAMA_URL = "http://localhost:11434"
-_DEFAULT_MODEL = "llama3.1:8b"
+_DEFAULT_MODEL = "tinyllama"
 _TIMEOUT = aiohttp.ClientTimeout(total=180)
 
-_SYSTEM_PROMPT = """\
-You are a world-class superforecaster with deep expertise in geopolitics, \
-economics, and calibrated probabilistic reasoning.
-
-Your core principles:
-- Always reason from base rates first, then update on current evidence
-- Avoid round numbers (never exactly 50%, 30%, 20%, 10%, etc.)
-- Generate THREE distinct scenarios: base case, upside, and downside
-- Each scenario must have a weight (probability of that scenario) and a \
-probability_of_yes (if this scenario plays out, how likely is YES?)
-- Weights must sum to exactly 1.0
-- Express genuine uncertainty — never fake precision when evidence is thin
-- Never anchor to market prices (you are not shown any)
-
-You MUST respond with ONLY a valid JSON object. No prose, no markdown fences.\
-"""
+_SYSTEM_PROMPT = "You are a geopolitical superforecaster. Output ONLY valid JSON. No prose."
 
 _USER_TEMPLATE = """\
 QUESTION: {question}
 
-═══ BACKGROUND (Wikipedia) ═══
-{wikipedia}
+CONTEXT (summary):
+{context}
 
-═══ RECENT NEWS (last 72h) ═══
-{news}
+SIGNALS: risk={risk} | trend={trend} | tone={tone}
 
-═══ MEDIA SENTIMENT (GDELT snapshot) ═══
-{gdelt_snapshot}
-
-═══ TEMPORAL INTELLIGENCE (30-day trend) ═══
-{temporal}
-
-═══ RISK SCORE ═══
-{risk_score}
-
-═══ CONFLICT DATA (ACLED) ═══
-{acled}
-
-═══ EVENT CLUSTERS ═══
-{clusters}
-
-═══ YOUR TASK ═══
-Generate THREE forecast scenarios for this question. For each scenario:
-1. Name it descriptively (e.g., "Diplomatic breakthrough", "Status quo", "Escalation")
-2. Assign it a weight (how likely is this scenario to be the one that unfolds?) — weights must sum to 1.0
-3. Give the probability_of_yes WITHIN that scenario
-4. Write a concise causal narrative (2-3 sentences)
-
-The overall probability of YES = sum(weight_i * probability_of_yes_i).
-
-Respond ONLY with this JSON:
-{{
-  "scenarios": [
-    {{
-      "name": "<descriptive scenario name>",
-      "weight": <float, scenario likelihood>,
-      "probability_of_yes": <float 0.05-0.95>,
-      "narrative": "<2-3 sentence causal chain explaining this scenario>"
-    }},
-    {{
-      "name": "<second scenario>",
-      "weight": <float>,
-      "probability_of_yes": <float>,
-      "narrative": "<narrative>"
-    }},
-    {{
-      "name": "<third scenario>",
-      "weight": <float>,
-      "probability_of_yes": <float>,
-      "narrative": "<narrative>"
-    }}
-  ],
-  "confidence": "<low|medium|high>",
-  "key_factors": ["<factor 1>", "<factor 2>", "<factor 3>"],
-  "abstain": false
-}}\
+Output JSON with 3 scenarios. Weights must sum to 1.0. Be precise (no round numbers).
+{{"scenarios":[{{"name":"<name>","weight":<0-1>,"probability_of_yes":<0.05-0.95>,"narrative":"<1 sentence>"}},{{"name":"<name>","weight":<0-1>,"probability_of_yes":<0.05-0.95>,"narrative":"<1 sentence>"}},{{"name":"<name>","weight":<0-1>,"probability_of_yes":<0.05-0.95>,"narrative":"<1 sentence>"}}],"confidence":"<low|medium|high>","key_factors":["<f1>","<f2>"],"abstain":false}}\
 """
 
 
@@ -109,29 +45,30 @@ def _build_prompt(
     acled_content: Optional[str],
     cluster_result: Optional[ClusterResult],
 ) -> str:
-    wiki = wikipedia_content.strip() or "(no Wikipedia background available)"
-    news = rss_headlines.strip() or "(no recent news found in last 72h)"
+    # Compact context: first 400 chars of wikipedia + top 3 headlines
+    wiki_snippet = (wikipedia_content.strip()[:400] + "...") if wikipedia_content.strip() else ""
+    headlines = []
+    if rss_headlines.strip():
+        headlines = [l.strip() for l in rss_headlines.split("\n") if l.strip()][:3]
+    context_parts = []
+    if wiki_snippet:
+        context_parts.append(wiki_snippet)
+    if headlines:
+        context_parts.append("News: " + " | ".join(h[:80] for h in headlines))
+    if acled_content:
+        context_parts.append(acled_content.strip()[:150])
+    context = "\n".join(context_parts) or "(no context available)"
 
-    if gdelt_tone is not None:
-        sentiment = "positive" if gdelt_tone > 2 else "negative" if gdelt_tone < -2 else "neutral"
-        gdelt_snapshot = f"Tone: {gdelt_tone:+.2f} ({sentiment}) | Articles: {gdelt_count}"
-    else:
-        gdelt_snapshot = "(GDELT snapshot unavailable)"
-
-    temporal_text = temporal.to_prompt_text() if temporal else "(30-day time series unavailable)"
-    risk_text = risk_score.to_prompt_text() if risk_score else "(risk score unavailable)"
-    acled_text = acled_content.strip() if acled_content else "(ACLED data not configured or no events found)"
-    cluster_text = cluster_result.to_prompt_text() if cluster_result else "(semantic clustering unavailable)"
+    risk_str = f"{risk_score.score:.0f}/100 [{risk_score.label}]" if risk_score else "N/A"
+    trend_str = temporal.risk_label if temporal else "N/A"
+    tone_str = f"{gdelt_tone:+.1f}" if gdelt_tone is not None else "N/A"
 
     return _USER_TEMPLATE.format(
         question=question,
-        wikipedia=wiki,
-        news=news,
-        gdelt_snapshot=gdelt_snapshot,
-        temporal=temporal_text,
-        risk_score=risk_text,
-        acled=acled_text,
-        clusters=cluster_text,
+        context=context,
+        risk=risk_str,
+        trend=trend_str,
+        tone=tone_str,
     )
 
 
@@ -291,19 +228,24 @@ async def estimate(
             "temperature": 0.2,
             "top_p": 0.9,
             "repeat_penalty": 1.1,
-            "num_predict": 900,   # more tokens for 3 scenarios + narratives
+            "num_predict": 350,
         },
     }
 
     logger.debug("llm_estimator: POST %s  model=%s", endpoint, model)
 
-    async with aiohttp.ClientSession() as session:
-        async with session.post(endpoint, json=payload, timeout=_TIMEOUT) as resp:
-            if resp.status != 200:
-                body = await resp.text()
-                raise RuntimeError(f"Ollama HTTP {resp.status}: {body[:300]}")
-            data = await resp.json()
+    # Use urllib for the LLM call — no session-level timeout that can interfere
+    import json as _json
+    import urllib.request as _urllib
+    req_bytes = _json.dumps(payload).encode()
+    req = _urllib.Request(endpoint, data=req_bytes, headers={"Content-Type": "application/json"})
+    loop = asyncio.get_event_loop()
 
+    def _do_request():
+        with _urllib.urlopen(req, timeout=300) as r:
+            return _json.loads(r.read().decode())
+
+    data = await loop.run_in_executor(None, _do_request)
     raw = data.get("message", {}).get("content", "") or data.get("response", "")
     logger.debug("llm_estimator: raw response: %s", raw[:400])
 

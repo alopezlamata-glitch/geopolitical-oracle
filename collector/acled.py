@@ -8,172 +8,143 @@ from typing import Optional
 
 import aiohttp
 
-from .base import EvidenceBlock, graceful_collector
+from .base import RawEvent, new_event_id, graceful_collector, load_cached, save_cached, save_raw_events
 
 logger = logging.getLogger(__name__)
 
-_BASE_URL = "https://api.acleddata.com/acled/read/"
-_TIMEOUT = aiohttp.ClientTimeout(total=10)
-_LOOKBACK_DAYS = 60
+_BASE_URL = "https://api.acleddata.com/acled/read"
+_TIMEOUT = aiohttp.ClientTimeout(total=15)
 
-# Comprehensive country list for NER extraction from question text
-_COUNTRIES = [
-    "Afghanistan", "Albania", "Algeria", "Angola", "Argentina", "Armenia",
-    "Australia", "Austria", "Azerbaijan", "Bahrain", "Bangladesh", "Belarus",
-    "Belgium", "Bolivia", "Bosnia", "Brazil", "Bulgaria", "Burma", "Cambodia",
-    "Cameroon", "Canada", "Chad", "Chile", "China", "Colombia", "Congo",
-    "Croatia", "Cuba", "Cyprus", "Czech", "Denmark", "Ecuador", "Egypt",
-    "Ethiopia", "Finland", "France", "Georgia", "Germany", "Ghana", "Greece",
-    "Guatemala", "Haiti", "Honduras", "Hungary", "India", "Indonesia", "Iran",
-    "Iraq", "Ireland", "Israel", "Italy", "Japan", "Jordan", "Kazakhstan",
-    "Kenya", "Kosovo", "Kuwait", "Kyrgyzstan", "Lebanon", "Libya", "Malaysia",
-    "Mali", "Mexico", "Moldova", "Morocco", "Mozambique", "Myanmar", "Nepal",
-    "Netherlands", "Nicaragua", "Nigeria", "North Korea", "Norway", "Pakistan",
-    "Palestine", "Panama", "Peru", "Philippines", "Poland", "Portugal",
-    "Qatar", "Romania", "Russia", "Rwanda", "Saudi Arabia", "Serbia",
-    "Somalia", "South Africa", "South Korea", "South Sudan", "Spain",
-    "Sri Lanka", "Sudan", "Sweden", "Switzerland", "Syria", "Taiwan",
-    "Tajikistan", "Tanzania", "Thailand", "Tunisia", "Turkey", "Turkmenistan",
-    "Ukraine", "United Kingdom", "United States", "Uzbekistan", "Venezuela",
-    "Vietnam", "Yemen", "Zimbabwe",
-]
-
-# Aliases for common references
-_ALIASES = {
-    "US": "United States", "USA": "United States", "UK": "United Kingdom",
-    "Britain": "United Kingdom", "England": "United Kingdom",
-    "Korea": "South Korea", "DPRK": "North Korea",
-    "Persia": "Iran", "Taiwan": "Taiwan", "Gaza": "Palestine",
-    "West Bank": "Palestine", "Donbas": "Ukraine", "Crimea": "Ukraine",
+# Simple country wordlist for NER from question text
+_COUNTRY_ALIASES: dict[str, str] = {
+    "iran": "Iran", "iranian": "Iran",
+    "israel": "Israel", "israeli": "Israel",
+    "russia": "Russia", "russian": "Russia",
+    "ukraine": "Ukraine", "ukrainian": "Ukraine",
+    "china": "China", "chinese": "China",
+    "taiwan": "Taiwan", "taiwanese": "Taiwan",
+    "usa": "United States", "us ": "United States", "american": "United States",
+    "north korea": "North Korea", "dprk": "North Korea",
+    "south korea": "South Korea",
+    "pakistan": "Pakistan", "india": "India",
+    "syria": "Syria", "syrian": "Syria",
+    "yemen": "Yemen", "yemeni": "Yemen",
+    "sudan": "Sudan", "ethiopia": "Ethiopia",
+    "myanmar": "Myanmar", "burma": "Burma",
+    "venezuela": "Venezuela", "haiti": "Haiti",
+    "afghanistan": "Afghanistan", "iraq": "Iraq",
+    "libya": "Libya", "somalia": "Somalia",
+    "mali": "Mali", "niger": "Niger",
+    "gaza": "Palestine", "west bank": "Palestine", "palestine": "Palestine",
+    "lebanon": "Lebanon", "hezbollah": "Lebanon",
 }
 
 
-def _extract_countries(text: str) -> list[str]:
-    """Extract country names from question text."""
-    found = []
-    text_lower = text.lower()
-
-    # Check aliases first
-    for alias, canonical in _ALIASES.items():
-        if alias.lower() in text_lower and canonical not in found:
-            found.append(canonical)
-
-    # Check country list
-    for country in _COUNTRIES:
-        if country.lower() in text_lower and country not in found:
-            found.append(country)
-
-    return found[:3]  # limit to top 3 countries
+def _extract_country(query: str) -> Optional[str]:
+    q_lower = query.lower()
+    # multi-word first
+    for alias, country in sorted(_COUNTRY_ALIASES.items(), key=lambda x: -len(x[0])):
+        if alias in q_lower:
+            return country
+    return None
 
 
-def _is_available() -> bool:
-    return bool(os.environ.get("ACLED_API_KEY") and os.environ.get("ACLED_EMAIL"))
+def _parse_event(row: dict) -> RawEvent:
+    actors = []
+    for field in ("actor1", "actor2"):
+        v = row.get(field, "") or ""
+        if v and v != "Unknown":
+            actors.append(v)
+
+    try:
+        fatalities = int(row.get("fatalities", 0) or 0)
+    except (ValueError, TypeError):
+        fatalities = 0
+
+    date_str = row.get("event_date", "") or ""
+    try:
+        pub = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    except ValueError:
+        pub = datetime.now(timezone.utc)
+
+    lat = row.get("latitude", None)
+    lon = row.get("longitude", None)
+
+    return RawEvent(
+        event_id=new_event_id(),
+        source="acled",
+        published_at=pub,
+        title=row.get("notes", "")[:200] or row.get("event_type", ""),
+        url="",
+        tone=0.0,
+        country=row.get("country", ""),
+        event_type=row.get("event_type", ""),
+        sub_event_type=row.get("sub_event_type", ""),
+        actors=actors,
+        fatalities=fatalities,
+        themes=[],
+        notes=row.get("notes", "")[:400],
+        location={
+            "country": row.get("country", ""),
+            "latitude": float(lat) if lat else None,
+            "longitude": float(lon) if lon else None,
+            "location": row.get("location", ""),
+        },
+        raw_metadata={
+            "source_scale": row.get("source_scale", ""),
+            "disorder_type": row.get("disorder_type", ""),
+        },
+    )
 
 
 @graceful_collector("acled")
-async def collect_acled(
-    session: aiohttp.ClientSession, query: str
-) -> Optional[EvidenceBlock]:
-    """
-    Fetch recent conflict events from ACLED for countries mentioned in the question.
+async def collect_acled(session: aiohttp.ClientSession, query: str, country: Optional[str] = None) -> list[RawEvent]:
+    api_key = os.environ.get("ACLED_API_KEY", "")
+    email = os.environ.get("ACLED_EMAIL", "")
+    if not api_key or not email:
+        logger.debug("acled: no credentials configured, skipping")
+        return []
 
-    Requires env vars: ACLED_API_KEY, ACLED_EMAIL
-    (Register free at: https://developer.acleddata.com)
+    target_country = country or _extract_country(query)
+    if not target_country:
+        logger.debug("acled: could not identify country from query")
+        return []
 
-    Skips gracefully if credentials are not set.
-    """
-    if not _is_available():
-        logger.debug("acled: no credentials, skipping")
-        return EvidenceBlock(
-            source="acled",
-            content="ACLED: credentials not configured (set ACLED_API_KEY + ACLED_EMAIL).",
-            quality="insufficient",
-            timestamp=datetime.now(timezone.utc),
-            metadata={},
-        )
+    cache_key = "acled_" + re.sub(r"\s+", "_", target_country.lower())[:30]
+    cached = load_cached(cache_key)
+    if cached is not None:
+        logger.debug("acled: cache hit (%d events)", len(cached))
+        return cached
 
-    countries = _extract_countries(query)
-    if not countries:
-        return EvidenceBlock(
-            source="acled",
-            content="ACLED: no countries identified in question.",
-            quality="insufficient",
-            timestamp=datetime.now(timezone.utc),
-            metadata={},
-        )
-
-    api_key = os.environ["ACLED_API_KEY"]
-    email = os.environ["ACLED_EMAIL"]
-
-    cutoff = datetime.now(timezone.utc) - timedelta(days=_LOOKBACK_DAYS)
-    cutoff_str = cutoff.strftime("%Y-%m-%d")
-    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    now = datetime.now(timezone.utc)
+    start = now - timedelta(days=30)
 
     params = {
         "key": api_key,
         "email": email,
-        "event_date": f"{cutoff_str}|{today_str}",
+        "country": target_country,
+        "limit": "200",
+        "event_date": f"{start.strftime('%Y-%m-%d')}|{now.strftime('%Y-%m-%d')}",
         "event_date_where": "BETWEEN",
-        "country": "|".join(countries),
-        "country_where": "OR",
-        "limit": 100,
-        "fields": "event_date|event_type|actor1|actor2|fatalities|country|notes",
-        "format": "json",
+        "fields": "event_date|event_type|sub_event_type|actor1|actor2|country|location|fatalities|notes|latitude|longitude|source_scale|disorder_type",
     }
 
     async with session.get(_BASE_URL, params=params, timeout=_TIMEOUT) as resp:
+        if resp.status == 403:
+            logger.warning("acled: 403 (invalid credentials?)")
+            return []
         resp.raise_for_status()
-        data = await resp.json(content_type=None)
+        data = await resp.json()
 
-    events = data.get("data", [])
-    if not events:
-        return EvidenceBlock(
-            source="acled",
-            content=f"ACLED: no conflict events in {', '.join(countries)} in last {_LOOKBACK_DAYS} days.",
-            quality="low",
-            timestamp=datetime.now(timezone.utc),
-            metadata={"countries": countries, "event_count": 0, "fatalities": 0},
-        )
+    rows = data.get("data", [])
+    if not isinstance(rows, list):
+        return []
 
-    # Aggregate statistics
-    total_fatalities = sum(int(e.get("fatalities") or 0) for e in events)
-    event_types: dict[str, int] = {}
-    for e in events:
-        et = e.get("event_type", "Unknown")
-        event_types[et] = event_types.get(et, 0) + 1
+    events = [_parse_event(row) for row in rows if isinstance(row, dict)]
+    logger.info("acled: collected %d events for country '%s'", len(events), target_country)
 
-    top_type = max(event_types, key=lambda k: event_types[k]) if event_types else "Unknown"
-    type_breakdown = " | ".join(f"{k}: {v}" for k, v in sorted(event_types.items(), key=lambda x: -x[1])[:4])
+    if events:
+        save_raw_events("acled", events)
+        save_cached(cache_key, events)
 
-    # Sample recent notable events (high fatality or protests)
-    notable = sorted(events, key=lambda e: int(e.get("fatalities") or 0), reverse=True)[:3]
-    notable_lines = []
-    for e in notable:
-        actor = e.get("actor1", "?")
-        etype = e.get("event_type", "?")
-        fat = int(e.get("fatalities") or 0)
-        date = e.get("event_date", "?")
-        notable_lines.append(f"  • {date}: {etype} involving {actor} ({fat} fatalities)")
-
-    content = (
-        f"ACLED conflict data — {', '.join(countries)} (last {_LOOKBACK_DAYS} days):\n"
-        f"Total events: {len(events)} | Total fatalities: {total_fatalities}\n"
-        f"Event types: {type_breakdown}\n"
-        f"Notable events:\n" + "\n".join(notable_lines)
-    )
-
-    quality = "high" if total_fatalities > 50 or len(events) > 30 else "medium" if events else "low"
-
-    return EvidenceBlock(
-        source="acled",
-        content=content,
-        quality=quality,
-        timestamp=datetime.now(timezone.utc),
-        metadata={
-            "countries": countries,
-            "event_count": len(events),
-            "fatalities": total_fatalities,
-            "dominant_event_type": top_type,
-            "event_type_breakdown": event_types,
-        },
-    )
+    return events

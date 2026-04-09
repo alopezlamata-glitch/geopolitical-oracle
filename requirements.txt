@@ -1,9 +1,8 @@
 aiohttp>=3.9.0
-scipy>=1.12.0
-scikit-learn>=1.4.0
 feedparser>=6.0.0
 python-dotenv>=1.0.0
 numpy>=1.24.0
-
-# Optional: enables semantic clustering (recommended, ~80MB model download)
-# sentence-transformers>=2.2.0
+scipy>=1.12.0
+scikit-learn>=1.4.0
+xgboost>=2.0.0
+shap>=0.44.0

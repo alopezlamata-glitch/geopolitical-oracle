@@ -1,262 +1,256 @@
 #!/usr/bin/env python3
 """
-Geopolitical Oracle — CLI entry point.
-
-Full pipeline:
-  1. Evidence collection  — Wikipedia, RSS, GDELT (snapshot + 30-day series), ACLED,
-                            Metaculus, Polymarket  [all parallel, 8-second timeouts]
-  2. Pipeline layer       — Temporal analysis, semantic clustering, risk scoring
-  3. LLM reasoning        — 3-scenario probabilistic forecast (Ollama / Llama 3.1)
-  4. Market aggregation   — logarithmic pooling of Metaculus + Polymarket signals
-  5. Combiner             — weighted log-odds blend + extremization
-  6. Output               — box-formatted terminal + JSON log for calibration
-
-Requires Ollama:
-    ollama pull llama3.1:8b   # recommended
-    ollama pull llama3.3:70b  # more powerful (~48GB RAM)
-    ollama serve
+Geopolitical Oracle — XGBoost + SHAP binary prediction pipeline.
+No LLM in the critical path.
 
 Usage:
-    python main.py "Will France hold snap elections before July 2026?"
-    python main.py --model llama3.3:70b "Will Iran sign a nuclear deal this year?"
-    python main.py --calibrate
-    python main.py --verbose "Will the Fed cut rates in June 2026?"
-
-Optional env vars (see .env.example):
-    OLLAMA_URL      Ollama server URL    (default: http://localhost:11434)
-    OLLAMA_MODEL    Model tag            (default: llama3.1:8b)
-    ACLED_API_KEY   ACLED API key        (enables conflict event data)
-    ACLED_EMAIL     ACLED account email
+  python main.py predict --question "..." --country "Iran" --resolution 2026-06-01
+  python main.py train
+  python main.py label --prediction-id <id> --outcome yes
+  python main.py calibration
+  python main.py drift
 """
 from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import logging
 import os
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 import aiohttp
 from dotenv import load_dotenv
 
-sys.path.insert(0, str(Path(__file__).parent))
+load_dotenv()
 
-from collector import (
-    EvidenceBlock,
-    collect_metaculus,
-    collect_polymarket,
-    collect_gdelt,
-    collect_gdelt_timeseries,
-    collect_wikipedia,
-    collect_rss,
-    collect_acled,
+# Windows asyncio fix
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
+    datefmt="%H:%M:%S",
 )
-from aggregator import aggregate_markets, estimate, combine
-from aggregator.llm_estimator import check_ollama
-from pipeline import analyze_temporal, embed_texts, cluster_events, compute_risk_score
-from output import format_output, save_prediction, run_calibration, apply_calibration
+logger = logging.getLogger("oracle")
 
-logger = logging.getLogger(__name__)
+# Suppress noisy sub-loggers
+for _log in ("aiohttp", "urllib3", "feedparser", "shap"):
+    logging.getLogger(_log).setLevel(logging.WARNING)
 
 
-async def run_oracle(question: str, model_override: str | None = None) -> None:
-    """Full oracle pipeline for a single question."""
+async def _collect_all(question: str, country: str | None) -> tuple[list, float | None, float | None]:
+    """Run all collectors concurrently. Returns (raw_events, metaculus_p, polymarket_p)."""
+    from collector import collect_gdelt, collect_rss, collect_metaculus, collect_polymarket, collect_acled
 
-    ollama_url = os.environ.get("OLLAMA_URL", "http://localhost:11434")
-    model = model_override or os.environ.get("OLLAMA_MODEL", "llama3.1:8b")
-    os.environ["OLLAMA_URL"] = ollama_url
-    os.environ["OLLAMA_MODEL"] = model
-
-    # ── 1. Health check ───────────────────────────────────────────────────────
-    print(f"\n  Checking Ollama ({model})...", end=" ", flush=True)
-    try:
-        await check_ollama(ollama_url, model)
-        print("OK")
-    except RuntimeError as e:
-        print(f"\n\n  ERROR: {e}\n")
-        sys.exit(1)
-
-    # ── 2. Normalize question ─────────────────────────────────────────────────
-    question = question.strip()
-    if not question.endswith("?"):
-        question += "?"
-
-    print(f"  Question: {question}")
-    print("  Collecting evidence (7 sources in parallel)...", end=" ", flush=True)
-
-    # ── 3. Run ALL collectors concurrently ────────────────────────────────────
+    # No session-level timeout — each collector manages its own timeout
     async with aiohttp.ClientSession() as session:
         results = await asyncio.gather(
+            collect_gdelt(session, question),
+            collect_rss(session, question),
             collect_metaculus(session, question),
             collect_polymarket(session, question),
-            collect_gdelt(session, question),
-            collect_gdelt_timeseries(session, question),
-            collect_wikipedia(session, question),
-            collect_rss(session, question),
-            collect_acled(session, question),
+            collect_acled(session, question, country=country),
             return_exceptions=True,
         )
 
-    collector_names = [
-        "metaculus", "polymarket", "gdelt", "gdelt_timeseries",
-        "wikipedia", "rss", "acled",
-    ]
-    evidence: list[EvidenceBlock] = []
-    for name, result in zip(collector_names, results):
-        if isinstance(result, Exception):
-            logger.warning("Collector '%s' failed: %s", name, result)
-        elif result is not None:
-            evidence.append(result)
-        else:
-            logger.warning("Collector '%s' returned None", name)
+    gdelt_events = results[0] if not isinstance(results[0], Exception) else []
+    rss_events = results[1] if not isinstance(results[1], Exception) else []
+    meta_result = results[2] if not isinstance(results[2], Exception) else (None, 0)
+    poly_result = results[3] if not isinstance(results[3], Exception) else (None, 0.0)
+    acled_events = results[4] if not isinstance(results[4], Exception) else []
 
-    good = sum(1 for b in evidence if b.quality != "insufficient")
-    print(f"done ({good}/{len(collector_names)} with data)")
+    for i, r in enumerate(results):
+        if isinstance(r, Exception):
+            logger.warning("collector[%d] raised: %s", i, r)
 
-    if not evidence:
-        print("  CANNOT ANSWER: all collectors failed.")
-        sys.exit(1)
+    all_events = (gdelt_events or []) + (rss_events or []) + (acled_events or [])
+    metaculus_p = meta_result[0] if isinstance(meta_result, tuple) else None
+    polymarket_p = poly_result[0] if isinstance(poly_result, tuple) else None
 
-    # ── 4. Pipeline layer ─────────────────────────────────────────────────────
-    print("  Running pipeline (temporal + clustering + scoring)...", end=" ", flush=True)
-
-    # 4a. Temporal analysis from GDELT 30-day series
-    temporal = None
-    ts_block = next((b for b in evidence if b.source == "gdelt_timeseries"), None)
-    if ts_block and ts_block.quality != "insufficient":
-        vol_series = ts_block.metadata.get("volume_series", [])
-        tone_series = ts_block.metadata.get("tone_series", [])
-        if vol_series:
-            temporal = analyze_temporal(vol_series, tone_series)
-
-    # 4b. Semantic clustering of RSS headlines + Wikipedia extract
-    cluster_result = None
-    texts_to_cluster: list[str] = []
-    rss_block = next((b for b in evidence if b.source == "rss"), None)
-    wiki_block = next((b for b in evidence if b.source == "wikipedia"), None)
-    if rss_block and rss_block.quality != "insufficient":
-        # Split headlines into individual texts
-        texts_to_cluster.extend([
-            line.strip() for line in rss_block.content.split("\n")
-            if line.strip() and len(line.strip()) > 20
-        ])
-    if wiki_block and wiki_block.content:
-        texts_to_cluster.append(wiki_block.content[:500])
-
-    if len(texts_to_cluster) >= 3:
-        embeddings = embed_texts(texts_to_cluster)
-        cluster_result = cluster_events(texts_to_cluster, embeddings)
-
-    # 4c. Risk score
-    gdelt_block = next((b for b in evidence if b.source == "gdelt"), None)
-    acled_block = next((b for b in evidence if b.source == "acled"), None)
-    risk_score = compute_risk_score(
-        temporal=temporal,
-        gdelt_tone=gdelt_block.metadata.get("avg_tone") if gdelt_block and gdelt_block.quality != "insufficient" else None,
-        gdelt_article_count=gdelt_block.metadata.get("article_count") if gdelt_block and gdelt_block.quality != "insufficient" else None,
-        rss_article_count=rss_block.metadata.get("articles_matched") if rss_block and rss_block.quality != "insufficient" else None,
-        acled_fatalities=acled_block.metadata.get("fatalities") if acled_block and acled_block.quality != "insufficient" else None,
-        acled_event_count=acled_block.metadata.get("event_count") if acled_block and acled_block.quality != "insufficient" else None,
-    )
-    print(f"done (risk={risk_score.score:.0f}/100 [{risk_score.label}])")
-
-    # ── 5. Market aggregation ─────────────────────────────────────────────────
-    p_market = aggregate_markets(evidence)
-
-    # ── 6. LLM estimation (3 scenarios) ──────────────────────────────────────
-    print(f"  Reasoning with {model} (generating scenarios)...", end=" ", flush=True)
-    llm_result = await estimate(
-        question=question,
-        evidence=evidence,
-        temporal=temporal,
-        risk_score=risk_score,
-        cluster_result=cluster_result,
-    )
-    print("done\n")
-
-    if llm_result.get("abstain"):
-        print("  INSUFFICIENT EVIDENCE: the model could not generate a calibrated forecast.\n")
-        sys.exit(0)
-
-    p_llm = llm_result.get("probability")
-    if p_llm is None:
-        print("  CANNOT ANSWER: LLM returned no probability.")
-        sys.exit(1)
-
-    # ── 7. Combine LLM + market ───────────────────────────────────────────────
-    p_final = combine(p_llm, p_market)
-
-    # ── 8. Platt calibration (if >= 30 resolved predictions exist) ───────────
-    p_corrected, was_calibrated = apply_calibration(p_final)
-    if was_calibrated:
-        logger.debug("Platt calibration: %.3f → %.3f", p_final, p_corrected)
-        p_final = p_corrected
-
-    # ── 9. Format and print ───────────────────────────────────────────────────
-    output = format_output(
-        question=question,
-        p_final=p_final,
-        evidence=evidence,
-        llm_result=llm_result,
-        p_llm=p_llm,
-        p_market=p_market,
-        temporal=temporal,
-        risk_score=risk_score,
-    )
-    print(output)
-
-    # ── 10. Save prediction log ───────────────────────────────────────────────
-    saved_path = save_prediction(
-        question=question,
-        p_final=p_final,
-        p_llm=p_llm,
-        p_market=p_market,
-        llm_result=llm_result,
-        evidence=evidence,
-        temporal=temporal,
-        risk_score=risk_score,
-    )
-    print(f"\n  Saved → {saved_path.relative_to(Path(__file__).parent)}\n")
+    return all_events, metaculus_p, polymarket_p
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Geopolitical Oracle — calibrated yes/no probability forecasts.",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=(
-            "Examples:\n"
-            '  python main.py "Will France hold snap elections before July 2026?"\n'
-            '  python main.py --model llama3.3:70b "Will China invade Taiwan this year?"\n'
-            "  python main.py --calibrate\n"
-        ),
-    )
-    parser.add_argument("question", nargs="?", default=None,
-                        help="A yes/no question resolvable within 2 years.")
-    parser.add_argument("--model", "-m", default=None, metavar="TAG",
-                        help="Ollama model tag (e.g. llama3.1:8b, llama3.3:70b).")
-    parser.add_argument("--calibrate", action="store_true",
-                        help="Show calibration stats on resolved predictions.")
-    parser.add_argument("--verbose", "-v", action="store_true",
-                        help="Enable debug logging.")
-    args = parser.parse_args()
+def cmd_predict(args) -> None:
+    from normalizer.canonical import normalize_all
+    from normalizer.deduplicator import deduplicate
+    from features.builder import build_features
+    from features.store import save_features
+    from predictor.inference import predict
+    from predictor.attribution import compute_shap_attribution
+    from predictor.output import format_output, save_prediction
+    from monitor.drift import detect_drift
 
-    logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.WARNING,
-        format="%(name)s: %(message)s",
-    )
+    question = args.question
+    country = getattr(args, "country", None)
 
-    load_dotenv(dotenv_path=Path(__file__).parent / ".env")
+    print(f"\nGathering evidence for: {question!r}")
+    print("Collecting from GDELT, RSS, Metaculus, Polymarket, ACLED...")
 
-    if args.calibrate:
-        run_calibration()
+    raw_events, metaculus_p, polymarket_p = asyncio.run(_collect_all(question, country))
+
+    print(f"  Raw events collected: {len(raw_events)}")
+
+    # Normalize
+    canonical = normalize_all(raw_events)
+    # Deduplicate
+    deduped = deduplicate(canonical)
+    print(f"  After dedup: {len(deduped)} events")
+
+    if not deduped:
+        print("\nINSUFFICIENT EVIDENCE — no events found for this question.")
+        print("Try a different phrasing or add ACLED credentials in .env")
         return
 
-    if not args.question:
-        parser.print_help()
-        sys.exit(1)
+    # Build features
+    features, provenance = build_features(
+        deduped,
+        metaculus_p=metaculus_p,
+        polymarket_p=polymarket_p,
+    )
 
-    asyncio.run(run_oracle(args.question, model_override=args.model))
+    # Save features
+    event_ids = [e.event_id for e in deduped]
+    save_features(question, features, provenance, event_ids)
+
+    # Predict
+    prediction = predict(features)
+
+    # Build event lookup
+    events_by_id = {e.event_id: e for e in deduped}
+
+    # SHAP attribution
+    attribution = compute_shap_attribution(features, provenance, events_by_id)
+
+    # Drift detection
+    drift_flags = detect_drift(features)
+
+    # Format and print
+    output = format_output(question, prediction, attribution, features, len(deduped), drift_flags)
+    print("\n" + output)
+
+    # Save prediction
+    path = save_prediction(question, prediction, attribution, features, provenance, len(deduped))
+    print(f"\nSaved: {path}")
+
+    if prediction.get("untrained"):
+        print("\n⚠  Model is UNTRAINED (need ≥30 labeled examples).")
+        print("   Run 'python main.py train' after labeling predictions.")
+
+
+def cmd_train(args) -> None:
+    from model.trainer import train, load_training_data
+    X, y = load_training_data()
+    print(f"Training data: {len(X)} labeled examples")
+    if len(X) < 30:
+        print(f"Need at least 30 examples (have {len(X)}). Label predictions with:")
+        print("  python main.py label --prediction-id <id> --outcome yes|no")
+        return
+    ok = train()
+    if ok:
+        print("Model trained and saved.")
+    else:
+        print("Training failed. Check logs.")
+
+
+def cmd_label(args) -> None:
+    """Add a resolved outcome to a prediction file."""
+    pred_dir = Path("data/predictions")
+    if not pred_dir.exists():
+        print("No predictions directory found.")
+        return
+
+    # Find prediction by ID prefix
+    matches = list(pred_dir.glob(f"*{args.prediction_id}*.json"))
+    if not matches:
+        matches = list(pred_dir.glob("*.json"))
+        # Try to match by timestamp prefix
+        matches = [f for f in matches if args.prediction_id in f.stem]
+
+    if not matches:
+        print(f"No prediction found matching ID: {args.prediction_id}")
+        return
+
+    path = matches[0]
+    data = json.loads(path.read_text())
+    outcome = 1 if args.outcome.lower() in ("yes", "1", "true") else 0
+    data["resolved"] = True
+    data["outcome"] = outcome
+    path.write_text(json.dumps(data, indent=2))
+    print(f"Labeled {path.name}: outcome={outcome}")
+
+    # Copy to training data
+    training_dir = Path("data/training")
+    training_dir.mkdir(parents=True, exist_ok=True)
+    training_record = {
+        "question": data["question"],
+        "timestamp": data["timestamp"],
+        "features": data["features"],
+        "outcome": outcome,
+    }
+    train_path = training_dir / path.name
+    train_path.write_text(json.dumps(training_record, indent=2))
+    print(f"Added to training data: {train_path.name}")
+
+
+def cmd_calibration(args) -> None:
+    from pathlib import Path
+    log_path = Path("data/model/calibration_log.json")
+    if not log_path.exists():
+        print("No calibration data yet. Train the model first.")
+        return
+    data = json.loads(log_path.read_text())
+    print(f"ECE: {data['ece']:.4f}  (n_val={data['n_val']})")
+    print("\nCalibration buckets:")
+    for b in data.get("buckets", []):
+        bar = "█" * int(b["mean_actual"] * 20)
+        print(f"  {b['bin']:12}  n={b['count']:4d}  pred={b['mean_pred']:.3f}  actual={b['mean_actual']:.3f}  {bar}")
+
+
+def cmd_drift(args) -> None:
+    from pathlib import Path
+    log_path = Path("data/model/drift_log.json")
+    if not log_path.exists():
+        print("No drift data yet. Run a prediction first.")
+        return
+    entries = json.loads(log_path.read_text())
+    last = entries[-1] if entries else {}
+    print(f"Last drift check: {last.get('timestamp', '?')}")
+    print(f"Drifted features: {last.get('drifted_count', 0)}")
+    for f in last.get("features", []):
+        if f["status"] != "stable":
+            print(f"  {f['feature']:35}  PSI={f['psi']:.4f}  [{f['status']}]")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Geopolitical Oracle")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    p_predict = sub.add_parser("predict", help="Run full prediction pipeline")
+    p_predict.add_argument("--question", "-q", required=True, help="Binary question to answer")
+    p_predict.add_argument("--country", "-c", default=None, help="Target country (for ACLED)")
+    p_predict.add_argument("--resolution", "-r", default=None, help="Resolution date YYYY-MM-DD")
+    p_predict.set_defaults(func=cmd_predict)
+
+    p_train = sub.add_parser("train", help="Train XGBoost on labeled data")
+    p_train.set_defaults(func=cmd_train)
+
+    p_label = sub.add_parser("label", help="Label a prediction outcome")
+    p_label.add_argument("--prediction-id", required=True)
+    p_label.add_argument("--outcome", required=True, choices=["yes", "no", "0", "1"])
+    p_label.set_defaults(func=cmd_label)
+
+    p_calib = sub.add_parser("calibration", help="Show calibration stats")
+    p_calib.set_defaults(func=cmd_calibration)
+
+    p_drift = sub.add_parser("drift", help="Show drift report")
+    p_drift.set_defaults(func=cmd_drift)
+
+    args = parser.parse_args()
+    args.func(args)
 
 
 if __name__ == "__main__":

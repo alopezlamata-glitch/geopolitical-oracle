@@ -5,3 +5,8 @@ __pycache__/
 .venv/
 venv/
 data/predictions/*.json
+data/raw/
+data/features/
+data/model/calibrator.pkl
+data/model/xgb_model.json
+data/model/feature_baseline.json

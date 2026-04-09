@@ -100,11 +100,14 @@ async def collect_gdelt_timeseries(
     vol_series: list[float] = []
     tone_series: list[float] = []
 
-    for mode, params, store in [
+    for i, (mode, params, store) in enumerate([
         ("timelinevol", vol_params, None),
         ("timelinetone", tone_params, None),
-    ]:
+    ]):
         try:
+            if i > 0:
+                import asyncio as _asyncio
+                await _asyncio.sleep(6)  # GDELT rate limit: 1 req/5s
             async with session.get(_BASE_URL, params=params, timeout=_TIMEOUT) as resp:
                 if resp.status == 429:
                     logger.warning("gdelt_timeseries: rate-limited (429) for %s", mode)
