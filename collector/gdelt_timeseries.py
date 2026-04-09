@@ -40,17 +40,25 @@ def _gdelt_datetime(dt: datetime) -> str:
     return dt.strftime("%Y%m%d%H%M%S")
 
 
-def _parse_timeline_series(data: dict) -> list[float]:
-    """Extract the data values from a GDELT timeline API response."""
+def _parse_timeline_series(data) -> list[float]:
+    """
+    Extract data values from a GDELT timeline API response.
+    Actual structure: {"timeline": [{"series": "Volume Intensity", "data": [...]}]}
+    """
     try:
+        if isinstance(data, str):
+            import json as _j
+            data = _j.loads(data)
+        if not isinstance(data, dict):
+            return []
         timeline = data.get("timeline", [])
         if not timeline:
             return []
-        series = timeline[0].get("series", [])
-        if not series:
-            return []
-        return [float(pt["value"]) for pt in series[0].get("data", [])]
-    except (KeyError, IndexError, TypeError, ValueError):
+        # Each entry in timeline is {"series": "name", "data": [{"date":..,"value":..}]}
+        first = timeline[0]
+        data_points = first.get("data", [])
+        return [float(pt["value"]) for pt in data_points if "value" in pt]
+    except (KeyError, IndexError, TypeError, ValueError, Exception):
         return []
 
 
@@ -98,12 +106,18 @@ async def collect_gdelt_timeseries(
     ]:
         try:
             async with session.get(_BASE_URL, params=params, timeout=_TIMEOUT) as resp:
+                if resp.status == 429:
+                    logger.warning("gdelt_timeseries: rate-limited (429) for %s", mode)
+                    continue
                 resp.raise_for_status()
-                raw = await resp.text()
-                if not raw or raw.lstrip().startswith("<"):
-                    logger.debug("gdelt_timeseries: empty/HTML response for %s", mode)
+                raw = await resp.text(encoding="utf-8", errors="replace")
+                if not raw or raw.lstrip().startswith("<") or raw.lstrip().startswith("Please"):
+                    logger.debug("gdelt_timeseries: non-JSON response for %s: %s", mode, raw[:80])
                     continue
                 data = json.loads(raw)
+                # Timeline API returns list at top level, not dict
+                if isinstance(data, str):
+                    data = json.loads(data)  # double-encoded edge case
                 parsed = _parse_timeline_series(data)
                 if mode == "timelinevol":
                     vol_series = parsed

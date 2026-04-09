@@ -67,8 +67,8 @@ async def collect_rss(session: aiohttp.ClientSession, query: str) -> EvidenceBlo
             pub = _entry_time(entry)
             if pub is None or pub < cutoff:
                 continue
-            title = getattr(entry, "title", "") or ""
-            summary = getattr(entry, "summary", "") or ""
+            title = (getattr(entry, "title", "") or "").encode("ascii", "ignore").decode()
+            summary = (getattr(entry, "summary", "") or "").encode("ascii", "ignore").decode()
             text = (title + " " + summary).lower()
             if any(kw in text for kw in keywords):
                 matched.append((title, summary[:200]))
