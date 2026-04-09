@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
+from typing import Optional
 
 import aiohttp
 
@@ -20,8 +21,9 @@ async def collect_metaculus(session: aiohttp.ClientSession, query: str) -> Evide
         "search": query,
         "status": "active",
         "limit": 20,
+        "type": "forecast",     # binary/continuous forecast questions only
     }
-    headers = {"Accept": "application/json"}
+    headers = {"Accept": "application/json", "User-Agent": "geopolitical-oracle/1.0"}
 
     async with session.get(_BASE_URL, params=params, headers=headers, timeout=_TIMEOUT) as resp:
         resp.raise_for_status()
@@ -37,19 +39,39 @@ async def collect_metaculus(session: aiohttp.ClientSession, query: str) -> Evide
             metadata={},
         )
 
-    # Pick best question: most forecasters
-    best = max(questions, key=lambda q: q.get("number_of_forecasters") or 0)
-    num_forecasters = best.get("number_of_forecasters") or 0
-    title = best.get("title") or best.get("question", {}).get("title", "Unknown")
-    close_time = best.get("close_time") or best.get("question", {}).get("close_time", "")
+    # Score each question: prefer more forecasters + closer title match
+    def score(q: dict) -> float:
+        fc = q.get("number_of_forecasters") or 0
+        has_pred = _extract_prediction(q) is not None
+        return fc * (2.0 if has_pred else 0.5)
 
-    # Extract community prediction (median)
+    best = max(questions, key=score)
+    num_forecasters = best.get("number_of_forecasters") or 0
+
+    # Title can live at multiple depths depending on API version
+    title = (
+        best.get("title")
+        or best.get("question", {}).get("title")
+        or best.get("page_url", "Unknown")
+    )
+    close_time = (
+        best.get("close_time")
+        or best.get("question", {}).get("close_time")
+        or best.get("resolve_time")
+        or ""
+    )
+
     cp = _extract_prediction(best)
 
     if num_forecasters < _MIN_FORECASTERS or cp is None:
+        reason = (
+            f"only {num_forecasters} forecasters (need >{_MIN_FORECASTERS})"
+            if num_forecasters < _MIN_FORECASTERS
+            else "no community prediction available"
+        )
         return EvidenceBlock(
             source="metaculus",
-            content=f"Metaculus question found ('{title}') but insufficient forecasters ({num_forecasters}) or no prediction.",
+            content=f"Metaculus: '{title}' — {reason}.",
             quality="insufficient",
             timestamp=datetime.now(timezone.utc),
             metadata={"probability": None, "forecasters": num_forecasters, "close_time": close_time},
@@ -69,32 +91,46 @@ async def collect_metaculus(session: aiohttp.ClientSession, query: str) -> Evide
     )
 
 
-def _extract_prediction(question: dict) -> float | None:
-    """Safely extract the median community prediction from a Metaculus question."""
-    # Try multiple known field paths
-    cp = question.get("community_prediction")
-    if cp is None:
-        cp = question.get("question", {}).get("community_prediction")
+def _extract_prediction(question: dict) -> Optional[float]:
+    """
+    Extract the community median probability from a Metaculus question object.
+    The API has changed shape multiple times — this tries every known path.
+    """
+    # Paths to check in order of reliability
+    candidates = [
+        # v2 API — binary questions
+        question.get("community_prediction"),
+        question.get("question", {}).get("community_prediction"),
+        # Sometimes nested under "aggregations"
+        question.get("aggregations", {}).get("recency_weighted", {}).get("latest", {}).get("centers", [None])[0]
+        if question.get("aggregations") else None,
+    ]
 
-    if cp is None:
-        return None
+    for cp in candidates:
+        if cp is None:
+            continue
 
-    if isinstance(cp, (int, float)):
-        return float(cp)
+        # Direct float (some API versions return probability directly)
+        if isinstance(cp, (int, float)):
+            v = float(cp)
+            if 0.0 <= v <= 1.0:
+                return v
 
-    if isinstance(cp, dict):
-        # Try nested paths
-        for path in [("full", "q2"), ("q2",)]:
-            val = cp
-            for key in path:
-                if not isinstance(val, dict):
-                    val = None
-                    break
-                val = val.get(key)
-            if val is not None:
-                try:
-                    return float(val)
-                except (TypeError, ValueError):
-                    continue
+        if isinstance(cp, dict):
+            # Try common nested key paths
+            for keys in [("full", "q2"), ("q2",), ("median",), ("mean",)]:
+                val = cp
+                for k in keys:
+                    if not isinstance(val, dict):
+                        val = None
+                        break
+                    val = val.get(k)
+                if val is not None:
+                    try:
+                        v = float(val)
+                        if 0.0 <= v <= 1.0:
+                            return v
+                    except (TypeError, ValueError):
+                        continue
 
     return None
