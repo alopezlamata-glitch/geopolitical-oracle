@@ -147,21 +147,64 @@ def _infer_type_from_acled(ev: RawEvent) -> str:
     return _ACLED_TYPE_MAP.get(ev.event_type, "other")
 
 
+_COUNTRY_MENTIONS: list[tuple[str, str]] = [
+    ("iran", "Iran"), ("iranian", "Iran"), ("tehran", "Iran"),
+    ("israel", "Israel"), ("israeli", "Israel"), ("tel aviv", "Israel"), ("jerusalem", "Israel"),
+    ("russia", "Russia"), ("russian", "Russia"), ("moscow", "Russia"), ("kremlin", "Russia"),
+    ("ukraine", "Ukraine"), ("ukrainian", "Ukraine"), ("kyiv", "Ukraine"), ("kharkiv", "Ukraine"),
+    ("china", "China"), ("chinese", "China"), ("beijing", "China"),
+    ("taiwan", "Taiwan"), ("taipei", "Taiwan"),
+    ("north korea", "North Korea"), ("pyongyang", "North Korea"), ("dprk", "North Korea"),
+    ("gaza", "Palestine"), ("west bank", "Palestine"), ("hamas", "Palestine"),
+    ("lebanon", "Lebanon"), ("beirut", "Lebanon"), ("hezbollah", "Lebanon"),
+    ("syria", "Syria"), ("damascus", "Syria"),
+    ("yemen", "Yemen"), ("houthi", "Yemen"), ("sanaa", "Yemen"),
+    ("sudan", "Sudan"), ("khartoum", "Sudan"),
+    ("ethiopia", "Ethiopia"), ("addis ababa", "Ethiopia"),
+    ("myanmar", "Myanmar"), ("burma", "Myanmar"),
+    ("pakistan", "Pakistan"), ("islamabad", "Pakistan"),
+    ("india", "India"), ("new delhi", "India"),
+    ("venezuela", "Venezuela"), ("caracas", "Venezuela"),
+    ("haiti", "Haiti"), ("port-au-prince", "Haiti"),
+    ("afghanistan", "Afghanistan"), ("kabul", "Afghanistan"), ("taliban", "Afghanistan"),
+    ("iraq", "Iraq"), ("baghdad", "Iraq"),
+    ("libya", "Libya"), ("tripoli", "Libya"),
+    ("somalia", "Somalia"), ("mogadishu", "Somalia"),
+    ("mali", "Mali"), ("niger", "Niger"),
+    ("saudi arabia", "Saudi Arabia"), ("riyadh", "Saudi Arabia"),
+]
+
+
+def _extract_country_from_title(title: str) -> str:
+    """Best-effort country extraction from RSS title text."""
+    t = title.lower()
+    # Multi-word first
+    for alias, country in sorted(_COUNTRY_MENTIONS, key=lambda x: -len(x[0])):
+        if alias in t:
+            return country
+    return ""
+
+
 def _infer_type_from_rss(ev: RawEvent) -> str:
-    title_lower = ev.title.lower()
+    text = (ev.title + " " + ev.notes).lower()
     kw_map = [
-        (["attack", "missile", "bomb", "airstrike", "strike", "troops", "military", "soldier"], "military_action"),
-        (["protest", "march", "demonstrat", "riot", "unrest"], "protest"),
-        (["ceasefire", "peace talks", "truce", "negotiat", "deal"], "ceasefire_signal"),
-        (["sanction", "embargo", "restrict"], "sanction"),
-        (["diplomat", "summit", "meeting", "talk", "foreign minister"], "diplomatic_statement"),
-        (["coup", "election", "political crisis", "resign"], "political_crisis"),
-        (["economy", "inflation", "recession", "trade war", "tariff"], "economic_shock"),
-        (["refugee", "humanitarian", "famine", "aid"], "humanitarian"),
-        (["hack", "cyber", "ransomware"], "cyber"),
+        (["killed", "casualties", "airstrike", "air strike", "bombing", "missile", "rocket",
+          "attack", "troops", "military operation", "offensive", "battle", "warfare",
+          "soldier", "fighter jet", "drone strike", "shelling", "artillery"], "military_action"),
+        (["protest", "march", "demonstrat", "riot", "unrest", "demonstrators took to"], "protest"),
+        (["ceasefire", "peace talks", "truce", "negotiat", "hostage deal",
+          "peace deal", "prisoner swap"], "ceasefire_signal"),
+        (["sanction", "embargo", "restrict", "blacklist", "freeze assets"], "sanction"),
+        (["diplomat", "summit", "foreign minister", "secretary of state",
+          "bilateral meeting", "envoy", "ambassador"], "diplomatic_statement"),
+        (["coup", "political crisis", "resign", "arrested opposition",
+          "government collapse", "snap election"], "political_crisis"),
+        (["economy", "inflation", "recession", "trade war", "tariff", "gdp"], "economic_shock"),
+        (["refugee", "humanitarian", "famine", "displaced", "aid convoy"], "humanitarian"),
+        (["hack", "cyber", "ransomware", "data breach"], "cyber"),
     ]
     for keywords, canonical in kw_map:
-        if any(kw in title_lower for kw in keywords):
+        if any(kw in text for kw in keywords):
             return canonical
     return "other"
 
@@ -226,6 +269,11 @@ def normalize(raw_event: RawEvent) -> CanonicalEvent:
     severity = _compute_severity(raw_event, event_type)
     polarity = _compute_polarity(raw_event, event_type)
 
+    # Extract country from title if source didn't provide one
+    country = raw_event.country or (
+        _extract_country_from_title(raw_event.title) if raw_event.source == "rss" else ""
+    )
+
     return CanonicalEvent(
         event_id=raw_event.event_id,
         doc_ids=[raw_event.event_id],
@@ -234,7 +282,7 @@ def normalize(raw_event: RawEvent) -> CanonicalEvent:
         event_type=event_type,
         sub_event_type=raw_event.sub_event_type,
         actors=raw_event.actors,
-        country=raw_event.country,
+        country=country,
         severity=severity,
         polarity=polarity,
         fatalities=raw_event.fatalities,

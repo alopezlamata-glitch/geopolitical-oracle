@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from collections import defaultdict
 from datetime import timedelta
 from typing import Iterator
@@ -8,6 +9,21 @@ from typing import Iterator
 from .canonical import CanonicalEvent
 
 logger = logging.getLogger(__name__)
+
+_STOP = {"the", "a", "an", "in", "on", "to", "of", "and", "or", "is", "are",
+         "was", "were", "by", "for", "with", "at", "from", "after", "says", "said"}
+
+
+def _title_tokens(title: str) -> set[str]:
+    tokens = re.sub(r"[^\w\s]", " ", title.lower()).split()
+    return {t for t in tokens if len(t) >= 4 and t not in _STOP}
+
+
+def _title_overlap(a: str, b: str) -> float:
+    ta, tb = _title_tokens(a), _title_tokens(b)
+    if not ta or not tb:
+        return 0.0
+    return len(ta & tb) / max(len(ta | tb), 1)
 
 
 def _actor_overlap(a: list[str], b: list[str]) -> float:
@@ -21,7 +37,12 @@ def _actor_overlap(a: list[str], b: list[str]) -> float:
 def _similarity(ev_a: CanonicalEvent, ev_b: CanonicalEvent) -> float:
     type_match = 1.0 if ev_a.event_type == ev_b.event_type else 0.0
     actor_sim = _actor_overlap(ev_a.actors, ev_b.actors)
-    return 0.5 * type_match + 0.5 * actor_sim
+    title_sim = _title_overlap(ev_a.raw_title, ev_b.raw_title)
+    # If actors are available use them; otherwise rely on title overlap
+    if ev_a.actors and ev_b.actors:
+        return 0.4 * type_match + 0.4 * actor_sim + 0.2 * title_sim
+    else:
+        return 0.3 * type_match + 0.7 * title_sim
 
 
 def _merge(primary: CanonicalEvent, duplicate: CanonicalEvent) -> CanonicalEvent:
