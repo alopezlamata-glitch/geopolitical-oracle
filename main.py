@@ -2,11 +2,19 @@
 """
 Geopolitical Oracle — CLI entry point.
 
+Requires Ollama running locally with Llama 3:
+    ollama pull llama3
+    ollama serve
+
 Usage:
     python main.py "Will France hold snap elections before July 2026?"
     python main.py "Will the Fed cut rates in June 2026?"
     python main.py --calibrate
     python main.py --verbose "Will China launch military exercises near Taiwan this month?"
+
+Environment variables (optional, see .env.example):
+    OLLAMA_URL    Base URL of Ollama server  (default: http://localhost:11434)
+    OLLAMA_MODEL  Model tag                  (default: llama3)
 """
 from __future__ import annotations
 
@@ -40,11 +48,10 @@ logger = logging.getLogger(__name__)
 async def run_oracle(question: str) -> None:
     """Full oracle pipeline for a single question."""
 
-    # ── 1. Validate API key early ────────────────────────────────────────────
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    if not api_key:
-        print("ERROR: ANTHROPIC_API_KEY is not set. Add it to your .env file.")
-        sys.exit(1)
+    # ── 1. Show Ollama config ─────────────────────────────────────────────────
+    ollama_url = os.environ.get("OLLAMA_URL", "http://localhost:11434")
+    model = os.environ.get("OLLAMA_MODEL", "llama3")
+    logger.debug("Using Ollama at %s with model '%s'", ollama_url, model)
 
     # ── 2. Normalize question ────────────────────────────────────────────────
     question = question.strip()

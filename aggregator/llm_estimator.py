@@ -1,20 +1,22 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import os
 import re
 from typing import Any, Optional
 
-import anthropic
+import aiohttp
 
 from collector.base import EvidenceBlock
 
 logger = logging.getLogger(__name__)
 
-_MODEL = "claude-sonnet-4-20250514"
-_MAX_TOKENS = 800
+# Ollama defaults — override via environment variables
+_DEFAULT_OLLAMA_URL = "http://localhost:11434"
+_DEFAULT_MODEL = "llama3"
+_TIMEOUT = aiohttp.ClientTimeout(total=120)  # LLM inference can be slow locally
+
 
 _SYSTEM_PROMPT = (
     "You are a superforecaster trained in calibrated probabilistic reasoning. "
@@ -35,7 +37,10 @@ def _build_user_prompt(
 ) -> str:
     gdelt_section = ""
     if gdelt_tone is not None:
-        gdelt_section = f"\nMedia sentiment signal: tone={gdelt_tone:.2f}, articles={gdelt_count}, sources={gdelt_diversity}"
+        gdelt_section = (
+            f"\nMedia sentiment signal: tone={gdelt_tone:.2f}, "
+            f"articles={gdelt_count}, sources={gdelt_diversity}"
+        )
 
     wiki_section = wikipedia_content.strip() if wikipedia_content.strip() else "(no Wikipedia background found)"
     rss_section = rss_headlines.strip() if rss_headlines.strip() else "(no recent news found)"
@@ -53,7 +58,7 @@ def _build_user_prompt(
         "{\n"
         '  "probability": <float between 0.05 and 0.95, or null if abstaining>,\n'
         '  "abstain": <true if evidence is too thin to forecast, otherwise false>,\n'
-        '  "reasoning": "<3-4 sentence chain of thought, max 300 chars>",\n'
+        '  "reasoning": "<3-4 sentence chain of thought>",\n'
         '  "confidence": "<low|medium|high>",\n'
         '  "key_factors": ["<factor1>", "<factor2>"]\n'
         "}"
@@ -61,7 +66,8 @@ def _build_user_prompt(
 
 
 def _extract_evidence_fields(evidence: list[EvidenceBlock]) -> dict[str, Any]:
-    """Pull relevant fields from evidence blocks for prompt construction."""
+    """Pull relevant fields from evidence blocks for prompt construction.
+    NOTE: Metaculus and Polymarket probabilities are deliberately excluded."""
     fields: dict[str, Any] = {
         "wikipedia_content": "",
         "rss_headlines": "",
@@ -88,7 +94,7 @@ def _parse_llm_response(raw: str) -> dict[str, Any]:
     2. json.loads
     3. Field-by-field regex fallback
     """
-    # Layer 1: extract JSON object
+    # Layer 1: extract the first JSON object
     match = re.search(r"\{.*\}", raw, re.DOTALL)
     candidate = match.group(0) if match else raw
 
@@ -127,7 +133,7 @@ def _parse_llm_response(raw: str) -> dict[str, Any]:
 
 
 def _validate_result(result: dict) -> dict:
-    """Validate types and ranges from parsed JSON."""
+    """Validate types and value ranges from parsed JSON."""
     p = result.get("probability")
     if p is not None:
         try:
@@ -155,36 +161,53 @@ def _validate_result(result: dict) -> dict:
     return result
 
 
-def _blocking_claude_call(client: anthropic.Anthropic, system: str, user: str) -> str:
-    """Synchronous Claude API call — meant to be run in an executor."""
-    message = client.messages.create(
-        model=_MODEL,
-        max_tokens=_MAX_TOKENS,
-        system=system,
-        messages=[{"role": "user", "content": user}],
-    )
-    return message.content[0].text
-
-
 async def estimate(question: str, evidence: list[EvidenceBlock]) -> dict[str, Any]:
     """
-    Call Claude with only non-market evidence and return a probability estimate.
-    Note: Metaculus and Polymarket probabilities are NEVER included in the prompt.
+    Call local Ollama (Llama 3) with only non-market evidence and return a
+    probability estimate.
+
+    NOTE: Metaculus and Polymarket probabilities are NEVER included in the prompt.
+
+    Environment variables:
+        OLLAMA_URL   Base URL of the Ollama server (default: http://localhost:11434)
+        OLLAMA_MODEL Model tag to use           (default: llama3)
     """
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    if not api_key:
-        raise RuntimeError("ANTHROPIC_API_KEY not set")
+    ollama_url = os.environ.get("OLLAMA_URL", _DEFAULT_OLLAMA_URL).rstrip("/")
+    model = os.environ.get("OLLAMA_MODEL", _DEFAULT_MODEL)
+    endpoint = f"{ollama_url}/api/chat"
 
-    client = anthropic.Anthropic(api_key=api_key)
     fields = _extract_evidence_fields(evidence)
-    user_prompt = _build_user_prompt(question, **fields)
+    user_content = _build_user_prompt(question, **fields)
 
-    logger.debug("llm_estimator: calling Claude (%s)", _MODEL)
-    loop = asyncio.get_event_loop()
-    raw_response = await loop.run_in_executor(
-        None, _blocking_claude_call, client, _SYSTEM_PROMPT, user_prompt
-    )
+    payload = {
+        "model": model,
+        "stream": False,
+        "messages": [
+            {"role": "system", "content": _SYSTEM_PROMPT},
+            {"role": "user", "content": user_content},
+        ],
+        "options": {
+            "temperature": 0.3,   # low temp for consistent JSON
+            "num_predict": 512,
+        },
+    }
+
+    logger.debug("llm_estimator: calling Ollama %s at %s", model, endpoint)
+
+    async with aiohttp.ClientSession() as session:
+        async with session.post(endpoint, json=payload, timeout=_TIMEOUT) as resp:
+            if resp.status != 200:
+                body = await resp.text()
+                raise RuntimeError(
+                    f"Ollama returned HTTP {resp.status}: {body[:200]}"
+                )
+            data = await resp.json()
+
+    # Ollama /api/chat response: {"message": {"role": "assistant", "content": "..."}}
+    raw_response = data.get("message", {}).get("content", "")
+    if not raw_response:
+        # Fallback for /api/generate style response
+        raw_response = data.get("response", "")
 
     logger.debug("llm_estimator: raw response: %s", raw_response[:200])
-    result = _parse_llm_response(raw_response)
-    return result
+    return _parse_llm_response(raw_response)
