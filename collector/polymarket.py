@@ -14,16 +14,47 @@ logger = logging.getLogger(__name__)
 
 _BASE_URL = "https://gamma-api.polymarket.com/markets"
 _MIN_VOLUME = 10_000
-_MIN_SIMILARITY = 0.3
+_MIN_KEYWORD_OVERLAP = 0.35  # fraction of query keywords that must appear in market title
+_MIN_SEQUENCE_SCORE = 0.55   # fallback: high bar for sequence similarity
 _TIMEOUT = aiohttp.ClientTimeout(total=8)
+
+_STOP_WORDS = {
+    "will", "the", "a", "an", "be", "is", "are", "was", "were", "in", "on",
+    "at", "to", "for", "of", "and", "or", "by", "with", "this", "that",
+    "from", "before", "after", "during", "about", "have", "has", "had",
+    "do", "does", "did", "not", "no", "its", "it", "there", "their",
+    "happen", "occur", "take", "place", "by", "until",
+}
 
 
 def _normalize(text: str) -> str:
     return re.sub(r"[^\w\s]", "", text.lower()).strip()
 
 
-def _similarity(a: str, b: str) -> float:
-    return SequenceMatcher(None, _normalize(a), _normalize(b)).ratio()
+def _keywords(text: str) -> set[str]:
+    return {w for w in _normalize(text).split() if len(w) >= 3 and w not in _STOP_WORDS}
+
+
+def _score(query: str, market_title: str, description: str = "") -> float:
+    """
+    Hybrid score: keyword overlap (primary) + sequence similarity (secondary).
+    A market must share meaningful keywords with the query to qualify.
+    """
+    q_kws = _keywords(query)
+    if not q_kws:
+        return 0.0
+
+    title_kws = _keywords(market_title)
+    desc_kws = _keywords(description)
+    all_market_kws = title_kws | desc_kws
+
+    overlap = len(q_kws & all_market_kws) / len(q_kws)
+
+    # Sequence similarity on normalized strings (structural match)
+    seq = SequenceMatcher(None, _normalize(query), _normalize(market_title)).ratio()
+
+    # Overlap is the gating signal; sequence adds a small boost for identical phrasing
+    return overlap * 0.75 + seq * 0.25
 
 
 def _parse_outcome_price(raw) -> float | None:
@@ -52,7 +83,6 @@ async def collect_polymarket(session: aiohttp.ClientSession, query: str) -> Evid
         markets = await resp.json()
 
     if not isinstance(markets, list):
-        # Some responses nest under a key
         markets = markets.get("markets", markets.get("data", []))
 
     if not markets:
@@ -64,24 +94,29 @@ async def collect_polymarket(session: aiohttp.ClientSession, query: str) -> Evid
             metadata={},
         )
 
-    # Find best fuzzy match
+    # Score all markets; require keyword overlap as primary gate
     best_market = None
     best_score = 0.0
     for market in markets:
         title = market.get("question") or market.get("title") or ""
         description = market.get("description") or ""
-        score = max(
-            _similarity(query, title),
-            _similarity(query, description),
-        )
-        if score > best_score:
-            best_score = score
+        s = _score(query, title, description)
+        if s > best_score:
+            best_score = s
             best_market = market
 
-    if best_market is None or best_score < _MIN_SIMILARITY:
+    # Require meaningful keyword overlap (not just structural string similarity)
+    q_kws = _keywords(query)
+    if best_market:
+        t = best_market.get("question") or best_market.get("title") or ""
+        overlap_fraction = len(q_kws & _keywords(t)) / max(len(q_kws), 1)
+    else:
+        overlap_fraction = 0.0
+
+    if best_market is None or overlap_fraction < _MIN_KEYWORD_OVERLAP:
         return EvidenceBlock(
             source="polymarket",
-            content=f"No sufficiently similar Polymarket market found (best score: {best_score:.2f}).",
+            content=f"No relevant Polymarket market found (best overlap: {overlap_fraction:.0%}).",
             quality="insufficient",
             timestamp=datetime.now(timezone.utc),
             metadata={},
@@ -90,21 +125,20 @@ async def collect_polymarket(session: aiohttp.ClientSession, query: str) -> Evid
     title = best_market.get("question") or best_market.get("title") or "Unknown"
     volume = float(best_market.get("volume") or 0)
     liquidity = float(best_market.get("liquidity") or 0)
-    outcome_prices_raw = best_market.get("outcomePrices")
-    yes_probability = _parse_outcome_price(outcome_prices_raw)
+    yes_probability = _parse_outcome_price(best_market.get("outcomePrices"))
 
     if volume < _MIN_VOLUME or yes_probability is None:
         reason = f"volume ${volume:,.0f} < ${_MIN_VOLUME:,}" if volume < _MIN_VOLUME else "could not parse price"
         return EvidenceBlock(
             source="polymarket",
-            content=f"Polymarket match '{title}' (score={best_score:.2f}) but insufficient: {reason}.",
+            content=f"Polymarket: '{title}' — insufficient: {reason}.",
             quality="insufficient",
             timestamp=datetime.now(timezone.utc),
             metadata={"probability": None, "volume": volume, "liquidity": liquidity},
         )
 
     content = (
-        f"Polymarket: '{title}' (match={best_score:.2f})\n"
+        f"Polymarket: '{title}' (overlap={overlap_fraction:.0%})\n"
         f"YES price: {yes_probability:.1%} | Volume: ${volume:,.0f} | Liquidity: ${liquidity:,.0f}"
     )
 

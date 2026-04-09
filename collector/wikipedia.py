@@ -12,6 +12,8 @@ logger = logging.getLogger(__name__)
 _SEARCH_URL = "https://en.wikipedia.org/w/api.php"
 _EXTRACT_MAX_CHARS = 1500
 _TIMEOUT = aiohttp.ClientTimeout(total=8)
+# Wikipedia requires a descriptive User-Agent or returns 403
+_HEADERS = {"User-Agent": "geopolitical-oracle/1.0 (research tool; contact via GitHub)"}
 
 
 @graceful_collector("wikipedia")
@@ -24,7 +26,7 @@ async def collect_wikipedia(session: aiohttp.ClientSession, query: str) -> Evide
         "format": "json",
         "srlimit": 1,
     }
-    async with session.get(_SEARCH_URL, params=search_params, timeout=_TIMEOUT) as resp:
+    async with session.get(_SEARCH_URL, params=search_params, headers=_HEADERS, timeout=_TIMEOUT) as resp:
         resp.raise_for_status()
         search_data = await resp.json()
 
@@ -49,7 +51,7 @@ async def collect_wikipedia(session: aiohttp.ClientSession, query: str) -> Evide
         "titles": page_title,
         "format": "json",
     }
-    async with session.get(_SEARCH_URL, params=extract_params, timeout=_TIMEOUT) as resp:
+    async with session.get(_SEARCH_URL, params=extract_params, headers=_HEADERS, timeout=_TIMEOUT) as resp:
         resp.raise_for_status()
         extract_data = await resp.json()
 

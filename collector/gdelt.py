@@ -3,7 +3,6 @@ from __future__ import annotations
 import logging
 import re
 from datetime import datetime, timezone
-from urllib.parse import quote_plus
 
 import aiohttp
 
@@ -12,7 +11,7 @@ from .base import EvidenceBlock, TTLCache, graceful_collector
 logger = logging.getLogger(__name__)
 
 _BASE_URL = "https://api.gdeltproject.org/api/v2/doc/doc"
-_TIMEOUT = aiohttp.ClientTimeout(total=8)
+_TIMEOUT = aiohttp.ClientTimeout(total=20)  # GDELT can be slow, give it more time
 _CACHE = TTLCache(ttl_minutes=30)
 
 
@@ -50,12 +49,13 @@ async def collect_gdelt(session: aiohttp.ClientSession, query: str) -> EvidenceB
     }
 
     async with session.get(_BASE_URL, params=params, timeout=_TIMEOUT) as resp:
-        # Guard against GDELT returning HTML on error
-        content_type = resp.headers.get("Content-Type", "")
-        if "json" not in content_type:
-            raise ValueError(f"GDELT returned non-JSON content-type: {content_type}")
         resp.raise_for_status()
-        data = await resp.json(content_type=None)
+        raw = await resp.text()
+        # GDELT sometimes returns empty body or HTML on overload
+        if not raw or raw.lstrip().startswith("<"):
+            raise ValueError("GDELT returned empty or HTML response (API overloaded)")
+        import json as _json
+        data = _json.loads(raw)
 
     articles = data.get("articles", [])
     if not articles:

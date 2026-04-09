@@ -19,11 +19,9 @@ _TIMEOUT = aiohttp.ClientTimeout(total=8)
 async def collect_metaculus(session: aiohttp.ClientSession, query: str) -> EvidenceBlock | None:
     params = {
         "search": query,
-        "status": "active",
         "limit": 20,
-        "type": "forecast",     # binary/continuous forecast questions only
     }
-    headers = {"Accept": "application/json", "User-Agent": "geopolitical-oracle/1.0"}
+    headers = {"Accept": "application/json"}
 
     async with session.get(_BASE_URL, params=params, headers=headers, timeout=_TIMEOUT) as resp:
         resp.raise_for_status()
