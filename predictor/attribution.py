@@ -41,11 +41,17 @@ def compute_shap_attribution(
     feat_names = feature_names or get_feature_names()
     x = np.array([[float(features.get(f, 0.0)) for f in feat_names]], dtype=np.float32)
 
-    # TreeSHAP
-    explainer = shap.TreeExplainer(model)
+    # TreeSHAP — pass booster directly to avoid XGBoost 3.x base_score format issue
+    try:
+        booster = model.get_booster()
+        explainer = shap.TreeExplainer(booster)
+    except Exception:
+        explainer = shap.TreeExplainer(model)
     shap_raw = explainer.shap_values(x)
     if isinstance(shap_raw, list):
-        phi_arr = shap_raw[1][0]  # class 1
+        phi_arr = shap_raw[1][0]  # class 1 (binary classifier)
+    elif shap_raw.ndim == 3:
+        phi_arr = shap_raw[0, :, 1]   # (samples, features, classes) → class 1
     else:
         phi_arr = shap_raw[0]
 

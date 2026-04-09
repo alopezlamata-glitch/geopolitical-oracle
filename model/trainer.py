@@ -78,7 +78,6 @@ def train() -> bool:
         subsample=0.8,
         colsample_bytree=0.8,
         eval_metric="logloss",
-        use_label_encoder=False,
         random_state=42,
     )
     model.fit(

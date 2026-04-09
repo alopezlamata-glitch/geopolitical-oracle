@@ -74,7 +74,8 @@ def format_output(
         lines.append(row(f"  ⚠  UNTRAINED MODEL — prior estimate only"))
 
     if drift_flags:
-        lines.append(row(f"  ⚠  DRIFT: {', '.join(drift_flags[:3])}"))
+        drift_summary = f"{len(drift_flags)} features" if len(drift_flags) > 3 else ', '.join(drift_flags)
+        lines.append(row(f"  ⚠  DRIFT detected: {drift_summary}"))
 
     lines.append(row(""))
 

@@ -1,0 +1,143 @@
+[
+  {
+    "timestamp": "2026-04-09T22:48:02.642359+00:00",
+    "drifted_count": 27,
+    "features": [
+      {
+        "feature": "military_count_7d",
+        "psi": 12.9683,
+        "status": "DRIFTED"
+      },
+      {
+        "feature": "military_count_30d",
+        "psi": 14.0274,
+        "status": "DRIFTED"
+      },
+      {
+        "feature": "protest_count_7d",
+        "psi": 11.5181,
+        "status": "DRIFTED"
+      },
+      {
+        "feature": "protest_count_30d",
+        "psi": 8.9773,
+        "status": "DRIFTED"
+      },
+      {
+        "feature": "diplomatic_count_7d",
+        "psi": 7.428,
+        "status": "DRIFTED"
+      },
+      {
+        "feature": "ceasefire_count_7d",
+        "psi": 13.8389,
+        "status": "DRIFTED"
+      },
+      {
+        "feature": "sanction_count_7d",
+        "psi": 11.3697,
+        "status": "DRIFTED"
+      },
+      {
+        "feature": "political_crisis_count_7d",
+        "psi": 9.1781,
+        "status": "DRIFTED"
+      },
+      {
+        "feature": "military_intensity_7d",
+        "psi": 13.5305,
+        "status": "DRIFTED"
+      },
+      {
+        "feature": "protest_intensity_7d",
+        "psi": 12.6555,
+        "status": "DRIFTED"
+      },
+      {
+        "feature": "overall_intensity_7d",
+        "psi": 14.4894,
+        "status": "DRIFTED"
+      },
+      {
+        "feature": "military_accel",
+        "psi": 9.2129,
+        "status": "DRIFTED"
+      },
+      {
+        "feature": "protest_accel",
+        "psi": 9.9825,
+        "status": "DRIFTED"
+      },
+      {
+        "feature": "overall_accel",
+        "psi": 14.7863,
+        "status": "DRIFTED"
+      },
+      {
+        "feature": "avg_polarity_7d",
+        "psi": 10.1684,
+        "status": "DRIFTED"
+      },
+      {
+        "feature": "avg_polarity_30d",
+        "psi": 11.959,
+        "status": "DRIFTED"
+      },
+      {
+        "feature": "tone_trend",
+        "psi": 12.6113,
+        "status": "DRIFTED"
+      },
+      {
+        "feature": "source_diversity_7d",
+        "psi": 13.7669,
+        "status": "DRIFTED"
+      },
+      {
+        "feature": "avg_independent_sources",
+        "psi": 12.9892,
+        "status": "DRIFTED"
+      },
+      {
+        "feature": "avg_contradiction_score",
+        "psi": 12.6332,
+        "status": "DRIFTED"
+      },
+      {
+        "feature": "fatalities_7d",
+        "psi": 2.0661,
+        "status": "DRIFTED"
+      },
+      {
+        "feature": "has_military_7d",
+        "psi": 5.9343,
+        "status": "DRIFTED"
+      },
+      {
+        "feature": "has_ceasefire_7d",
+        "psi": 11.1856,
+        "status": "DRIFTED"
+      },
+      {
+        "feature": "escalation_index",
+        "psi": 5.5944,
+        "status": "DRIFTED"
+      },
+      {
+        "feature": "metaculus_p",
+        "psi": 13.3371,
+        "status": "DRIFTED"
+      },
+      {
+        "feature": "polymarket_p",
+        "psi": 14.2033,
+        "status": "DRIFTED"
+      },
+      {
+        "feature": "market_available",
+        "psi": 10.8926,
+        "status": "DRIFTED"
+      }
+    ]
+  }
+]

@@ -1,0 +1,36 @@
+{
+  "ece": 0.15,
+  "n_val": 16,
+  "buckets": [
+    {
+      "bin": "[0.0,0.1)",
+      "count": 5,
+      "mean_pred": 0.0493,
+      "mean_actual": 0.2
+    },
+    {
+      "bin": "[0.3,0.4)",
+      "count": 1,
+      "mean_pred": 0.3477,
+      "mean_actual": 0.0
+    },
+    {
+      "bin": "[0.4,0.5)",
+      "count": 1,
+      "mean_pred": 0.4092,
+      "mean_actual": 0.0
+    },
+    {
+      "bin": "[0.7,0.8)",
+      "count": 1,
+      "mean_pred": 0.7903,
+      "mean_actual": 0.0
+    },
+    {
+      "bin": "[0.9,1.0)",
+      "count": 8,
+      "mean_pred": 0.9876,
+      "mean_actual": 1.0
+    }
+  ]
+}
