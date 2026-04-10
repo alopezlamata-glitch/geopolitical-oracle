@@ -88,7 +88,7 @@ def detect_drift(features: dict[str, float]) -> list[str]:
             "status": status,
         })
 
-    # Append to drift log
+    # Append to drift log (schema_version ensures forward-compatible parsing)
     drift_log = []
     if _DRIFT_LOG_PATH.exists():
         try:
@@ -96,6 +96,8 @@ def detect_drift(features: dict[str, float]) -> list[str]:
         except Exception:
             pass
     drift_log.append({
+        "schema_version": "1.0",
+        "method": "z_score",
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "n_history": len(history),
         "drifted_count": len(drifted),

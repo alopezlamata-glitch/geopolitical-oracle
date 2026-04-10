@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from datetime import datetime, timezone
@@ -7,6 +8,17 @@ from pathlib import Path
 from typing import Optional
 
 _PREDICTIONS_DIR = Path(__file__).parent.parent / "data" / "predictions"
+_MODEL_PATH = Path(__file__).parent.parent / "data" / "model" / "xgb_model.json"
+_SCHEMA_VERSION = "1.1"
+
+
+def _model_sha256() -> str:
+    """SHA-256 of the model artifact for reproducibility / audit trail."""
+    if not _MODEL_PATH.exists():
+        return "untrained"
+    h = hashlib.sha256()
+    h.update(_MODEL_PATH.read_bytes())
+    return h.hexdigest()[:16]   # first 16 hex chars — enough for drift detection
 
 
 def _verbal(p: float) -> str:
@@ -117,18 +129,43 @@ def save_prediction(
     provenance: dict,
     n_events: int,
 ) -> Path:
+    """
+    Persist a versioned, auditable prediction record.
+
+    Schema v1.1 adds:
+      - schema_version      : for forward-compatible parsing
+      - prediction_id       : {timestamp}_{slug}, stable identifier
+      - model_version       : SHA-256 prefix of xgb_model.json
+      - ci_method           : conformal | conformal-sym | heuristic
+      - provenance          : full feature→event mapping (compressed to top-5 per feature)
+      - flip_set            : minimal removal set from attribution
+    """
     _PREDICTIONS_DIR.mkdir(parents=True, exist_ok=True)
-    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+    now = datetime.now(timezone.utc)
+    ts = now.strftime("%Y%m%dT%H%M%S")
     slug = _slug(question)
-    path = _PREDICTIONS_DIR / f"{ts}_{slug}.json"
+    prediction_id = f"{ts}_{slug}"
+    path = _PREDICTIONS_DIR / f"{prediction_id}.json"
+
+    # Compress provenance: keep top-5 contributors per feature to bound file size
+    provenance_compact: dict = {}
+    for fname, contribs in (provenance or {}).items():
+        top = sorted(contribs, key=lambda c: c.get("weight", 0), reverse=True)[:5]
+        if top:
+            provenance_compact[fname] = top
+
     payload = {
+        "schema_version": _SCHEMA_VERSION,
+        "prediction_id": prediction_id,
+        "model_version": _model_sha256(),
         "question": question,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": now.isoformat(),
         "answer": prediction["answer"],
         "calibrated_prob": prediction["calibrated_prob"],
         "raw_prob": prediction["raw_prob"],
         "ci_lo": prediction["ci_lo"],
         "ci_hi": prediction["ci_hi"],
+        "ci_method": prediction.get("ci_method", "heuristic"),
         "untrained": prediction.get("untrained", False),
         "n_events": n_events,
         "features": features,
@@ -136,7 +173,9 @@ def save_prediction(
             "top_positive": attribution.get("top_positive", []),
             "top_negative": attribution.get("top_negative", []),
             "counterfactuals": attribution.get("counterfactuals", []),
+            "flip_set": attribution.get("flip_set", {}),
         },
+        "provenance": provenance_compact,
         "resolved": False,
         "outcome": None,
     }

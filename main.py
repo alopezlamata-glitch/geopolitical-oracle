@@ -204,8 +204,13 @@ def cmd_calibration(args) -> None:
         print("No calibration data yet. Train the model first.")
         return
     data = json.loads(log_path.read_text())
-    print(f"ECE: {data['ece']:.4f}  (n_val={data['n_val']})")
-    print("\nCalibration buckets:")
+    ece_cal = data.get("ece_cal", data.get("ece", "?"))
+    ece_raw = data.get("ece_raw", "?")
+    method = data.get("method", "?")
+    print(f"Calibrator       : {method}")
+    print(f"ECE (calibrated) : {ece_cal}  (n_val={data['n_val']})")
+    print(f"ECE (raw)        : {ece_raw}")
+    print("\nCalibration buckets (calibrated probs vs actual):")
     for b in data.get("buckets", []):
         bar = "█" * int(b["mean_actual"] * 20)
         print(f"  {b['bin']:12}  n={b['count']:4d}  pred={b['mean_pred']:.3f}  actual={b['mean_actual']:.3f}  {bar}")
@@ -219,11 +224,15 @@ def cmd_drift(args) -> None:
         return
     entries = json.loads(log_path.read_text())
     last = entries[-1] if entries else {}
-    print(f"Last drift check: {last.get('timestamp', '?')}")
-    print(f"Drifted features: {last.get('drifted_count', 0)}")
+    method = last.get("method", "z_score")
+    print(f"Last drift check : {last.get('timestamp', '?')}")
+    print(f"Method           : {method}")
+    print(f"Drifted features : {last.get('drifted_count', 0)}")
     for f in last.get("features", []):
         if f["status"] != "stable":
-            print(f"  {f['feature']:35}  PSI={f['psi']:.4f}  [{f['status']}]")
+            z = f.get("z_score", "?")
+            z_str = f"{z:.4f}" if isinstance(z, float) else str(z)
+            print(f"  {f['feature']:35}  z={z_str}  [{f['status']}]")
 
 
 def main():

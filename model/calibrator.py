@@ -88,30 +88,45 @@ def calibrate(model, X_val: np.ndarray, y_val: np.ndarray, feature_names: list[s
     logger.info("calibrator: saved conformal scores (%d pos, %d neg)",
                 len(scores_pos), len(scores_neg))
 
-    # Compute ECE over 10 bins
+    # Compute ECE over 10 bins — on calibrated probs (primary) and raw probs (diagnostic).
+    # Using calibrated probs is correct: we're measuring the quality of the full
+    # model+calibrator pipeline, not the raw classifier output.
     n_bins = 10
     bins = np.linspace(0, 1, n_bins + 1)
-    ece = 0.0
-    bucket_log = []
-    for i in range(n_bins):
-        lo, hi = bins[i], bins[i + 1]
-        mask = (raw_probs >= lo) & (raw_probs < hi)
-        if mask.sum() == 0:
-            continue
-        bucket_p = raw_probs[mask].mean()
-        bucket_outcome = y_val[mask].mean()
-        bucket_n = mask.sum()
-        ece += (bucket_n / n) * abs(bucket_p - bucket_outcome)
-        bucket_log.append({
-            "bin": f"[{lo:.1f},{hi:.1f})",
-            "count": int(bucket_n),
-            "mean_pred": round(float(bucket_p), 4),
-            "mean_actual": round(float(bucket_outcome), 4),
-        })
 
-    log = {"ece": round(ece, 4), "n_val": n, "buckets": bucket_log}
+    def _ece_buckets(probs: np.ndarray) -> tuple[float, list[dict]]:
+        err = 0.0
+        log_rows = []
+        for i in range(n_bins):
+            lo_b, hi_b = bins[i], bins[i + 1]
+            mask = (probs >= lo_b) & (probs < hi_b)
+            if mask.sum() == 0:
+                continue
+            bucket_p = probs[mask].mean()
+            bucket_outcome = y_val[mask].astype(float).mean()
+            bucket_n = int(mask.sum())
+            err += (bucket_n / n) * abs(bucket_p - bucket_outcome)
+            log_rows.append({
+                "bin": f"[{lo_b:.1f},{hi_b:.1f})",
+                "count": bucket_n,
+                "mean_pred": round(float(bucket_p), 4),
+                "mean_actual": round(float(bucket_outcome), 4),
+            })
+        return round(float(err), 4), log_rows
+
+    ece_cal, bucket_log = _ece_buckets(calibrated_probs)
+    ece_raw, _ = _ece_buckets(raw_probs)
+
+    log = {
+        "ece_cal": ece_cal,
+        "ece_raw": round(ece_raw, 4),
+        "n_val": n,
+        "method": method,
+        "buckets": bucket_log,
+    }
     _CALIB_LOG_PATH.write_text(json.dumps(log, indent=2))
-    logger.info("calibrator: ECE = %.4f on %d validation examples", ece, n)
+    logger.info("calibrator: ECE_cal=%.4f  ECE_raw=%.4f  method=%s  n=%d",
+                ece_cal, ece_raw, method, n)
 
 
 def load_calibrator():

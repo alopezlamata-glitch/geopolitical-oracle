@@ -79,9 +79,17 @@ def _train_fold(
     X_cal: np.ndarray,
     y_cal: np.ndarray,
 ) -> tuple:
-    """Train XGBoost + Platt calibrator on fold. Returns (model, calibrator)."""
+    """
+    Train XGBoost + calibrator on fold.
+    Returns (model, calibrator, calibrator_method).
+
+    Calibrator selection:
+      n_cal >= 80: isotonic (non-parametric, more powerful)
+      n_cal <  80: Platt/logistic (stable on small N)
+    """
     import xgboost as xgb
     from sklearn.linear_model import LogisticRegression
+    from sklearn.isotonic import IsotonicRegression
 
     n_neg = int((y_train == 0).sum())
     n_pos = int((y_train == 1).sum())
@@ -99,28 +107,43 @@ def _train_fold(
     )
     model.fit(X_train, y_train, verbose=False)
 
-    # Platt calibration on calibration split (stable for small N)
     raw_cal = model.predict_proba(X_cal)[:, 1]
     eps = 1e-6
-    logits = np.log(np.clip(raw_cal, eps, 1 - eps) /
-                    (1 - np.clip(raw_cal, eps, 1 - eps))).reshape(-1, 1)
-    lr = LogisticRegression(C=1.0, solver="lbfgs")
-    lr.fit(logits, y_cal)
 
-    return model, lr
+    n_cal = len(y_cal)
+    if n_cal >= 80:
+        # Isotonic: more expressive, needs data
+        iso = IsotonicRegression(out_of_bounds="clip")
+        iso.fit(raw_cal, y_cal)
+        calibrator = iso
+        method = "isotonic"
+    else:
+        # Platt scaling: logistic on logit(p)
+        logits = np.log(np.clip(raw_cal, eps, 1 - eps) /
+                        (1 - np.clip(raw_cal, eps, 1 - eps))).reshape(-1, 1)
+        lr = LogisticRegression(C=1.0, solver="lbfgs")
+        lr.fit(logits, y_cal)
+        calibrator = lr
+        method = "platt"
+
+    return model, calibrator, method
 
 
 def _predict_fold(
     model,
     calibrator,
+    calibrator_method: str,
     X_test: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Return (raw_probs, calibrated_probs) for test examples."""
     raw = model.predict_proba(X_test)[:, 1]
     eps = 1e-6
-    logits = np.log(np.clip(raw, eps, 1 - eps) /
-                    (1 - np.clip(raw, eps, 1 - eps))).reshape(-1, 1)
-    cal = calibrator.predict_proba(logits)[:, 1]
+    if calibrator_method == "isotonic":
+        cal = np.clip(calibrator.predict(raw), eps, 1 - eps)
+    else:
+        logits = np.log(np.clip(raw, eps, 1 - eps) /
+                        (1 - np.clip(raw, eps, 1 - eps))).reshape(-1, 1)
+        cal = calibrator.predict_proba(logits)[:, 1]
     return raw, cal
 
 
@@ -197,6 +220,38 @@ def _ece(y: np.ndarray, p: np.ndarray, n_bins: int = 10) -> float:
             continue
         ece += (mask.sum() / n) * abs(p[mask].mean() - y[mask].astype(float).mean())
     return round(float(ece), 4)
+
+
+def _ece_by_range(y: np.ndarray, p: np.ndarray) -> dict[str, float | None]:
+    """
+    ECE broken down by probability range to expose calibration heterogeneity.
+    Aggregate ECE masks failures at extremes (under-prediction at low p,
+    over-prediction at high p). Range-ECE makes this explicit.
+
+    Ranges:
+      low  : [0.0, 0.2)   — rare events, known weak spot
+      mid  : [0.2, 0.8)   — contested range, most decision-relevant
+      high : [0.8, 1.0]   — high-confidence predictions
+    """
+    ranges = {"low": (0.0, 0.2), "mid": (0.2, 0.8), "high": (0.8, 1.01)}
+    out: dict[str, float | None] = {}
+    for name, (lo, hi) in ranges.items():
+        mask = (p >= lo) & (p < hi)
+        if mask.sum() < 3:
+            out[name] = None
+            continue
+        p_r = p[mask]
+        y_r = y[mask].astype(float)
+        n_r = len(p_r)
+        bins = np.linspace(lo, hi, 6)  # 5 sub-bins per range
+        ece_r = 0.0
+        for b_lo, b_hi in zip(bins[:-1], bins[1:]):
+            bm = (p_r >= b_lo) & (p_r < b_hi)
+            if not bm.any():
+                continue
+            ece_r += (bm.sum() / n_r) * abs(p_r[bm].mean() - y_r[bm].mean())
+        out[name] = round(float(ece_r), 4)
+    return out
 
 
 def _reliability_diagram(y: np.ndarray, p: np.ndarray, n_bins: int = 10) -> list[dict]:
@@ -289,19 +344,20 @@ def _run_folds(folds: list[tuple[str, list, list]]) -> list[dict]:
         y_test = np.array([e["outcome"] for e in test_ex], dtype=np.int32)
 
         try:
-            model, calibrator = _train_fold(X_fit, y_fit, X_cal, y_cal)
+            model, calibrator, cal_method = _train_fold(X_fit, y_fit, X_cal, y_cal)
         except Exception as exc:
             logger.warning("fold '%s' training failed: %s", label, exc)
             continue
 
-        _, p_cal = _predict_fold(model, calibrator, X_cal)
-        _, p_test = _predict_fold(model, calibrator, X_test)
+        _, p_cal = _predict_fold(model, calibrator, cal_method, X_cal)
+        _, p_test = _predict_fold(model, calibrator, cal_method, X_test)
 
         base_rate = float(y_test.mean())
         conf = _conformal_coverage(y_cal, p_cal, y_test, p_test)
 
         result = {
             "fold": label,
+            "calibrator_method": cal_method,
             "n_train": len(train_ex),
             "n_cal": len(cal_ex),
             "n_test": len(test_ex),
@@ -310,6 +366,7 @@ def _run_folds(folds: list[tuple[str, list, list]]) -> list[dict]:
             "brier_skill": _brier_skill(y_test, p_test),
             "roc_auc": _roc_auc(y_test, p_test),
             "ece": _ece(y_test, p_test),
+            "ece_by_range": _ece_by_range(y_test, p_test),
             "conformal_coverage_80": conf,
             "reliability": _reliability_diagram(y_test, p_test),
         }
@@ -364,12 +421,27 @@ def _aggregate(fold_results: list[dict]) -> dict:
     avg_coverage = round(sum(conformal_coverages) / len(conformal_coverages), 4) \
         if conformal_coverages else None
 
+    # ── Range-ECE aggregate (weighted average, skip None) ─────────────────────
+    ece_range_agg: dict[str, float | None] = {}
+    for rng in ("low", "mid", "high"):
+        vals = [
+            (r["ece_by_range"][rng], r["n_test"])
+            for r in fold_results
+            if r.get("ece_by_range", {}).get(rng) is not None
+        ]
+        if vals:
+            total_n = sum(n for _, n in vals)
+            ece_range_agg[rng] = round(sum(v * n for v, n in vals) / total_n, 4)
+        else:
+            ece_range_agg[rng] = None
+
     return {
         "n_folds": len(fold_results),
         "brier_weighted": _wmean("brier"),
         "brier_skill_weighted": _wmean("brier_skill"),
         "roc_auc_weighted": _wmean("roc_auc"),
         "ece_weighted": _wmean("ece"),
+        "ece_by_range": ece_range_agg,
         "conformal_coverage_80_avg": avg_coverage,
         "conformal_target": 0.80,
         "reliability_diagram": agg_reliability,
@@ -420,9 +492,15 @@ def main() -> None:
 
     agg = _aggregate(all_results)
 
+    # Per-strategy aggregates (explicit, not hidden in combined aggregate)
+    within_agg = _aggregate(within_results) if within_results else {}
+    cross_agg = _aggregate(cross_results) if cross_results else {}
+
     output = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "aggregate": agg,
+        "within_era_aggregate": within_agg,
+        "cross_era_aggregate": cross_agg,
         "within_era": within_results,
         "cross_era": cross_results,
     }
