@@ -138,6 +138,14 @@ def cmd_predict(args) -> None:
     from monitor.drift import detect_drift
     from question.parser import parse_question
     from question.ood import assess_ood
+    from data_layer.db import init_schema
+    from data_layer.pipeline_hooks import (
+        persist_raw_events,
+        persist_canonical_events,
+        persist_question,
+        persist_feature_snapshot,
+        persist_prediction_record,
+    )
 
     question = args.question
     country = getattr(args, "country", None)
@@ -146,11 +154,9 @@ def cmd_predict(args) -> None:
     pq = parse_question(question)
     ood = assess_ood(pq)
 
-    # Always show what was parsed so the user can catch misparses
     _print_parse_summary(pq, ood)
 
     if not ood.in_domain:
-        import sys
         out = sys.stdout.buffer
         def _pb(line):
             out.write((line + "\n").encode("utf-8", errors="replace")); out.flush()
@@ -165,13 +171,14 @@ def cmd_predict(args) -> None:
     print(f"\nGathering evidence for: {question!r}")
     print("Collecting from GDELT, RSS, Metaculus, Polymarket, ACLED...")
 
+    # ── Step 2: Collect ───────────────────────────────────────────────────────
     raw_events, metaculus_p, polymarket_p = asyncio.run(_collect_all(question, country))
+    as_of_time = datetime.now(timezone.utc)   # strict data cutoff: nothing after this
 
     print(f"  Raw events collected: {len(raw_events)}")
 
-    # Normalize
+    # ── Step 3: Normalize + deduplicate ───────────────────────────────────────
     canonical = normalize_all(raw_events)
-    # Deduplicate
     deduped = deduplicate(canonical)
     print(f"  After dedup: {len(deduped)} events")
 
@@ -180,41 +187,61 @@ def cmd_predict(args) -> None:
         print("Try a different phrasing or add ACLED credentials in .env")
         return
 
-    # Build features (country used for structural prior lookup)
+    # ── Step 4: Build features ────────────────────────────────────────────────
     features, provenance = build_features(
         deduped,
         metaculus_p=metaculus_p,
         polymarket_p=polymarket_p,
         country=country,
     )
-
-    # Save features
     event_ids = [e.event_id for e in deduped]
     save_features(question, features, provenance, event_ids)
 
-    # Predict (pass market signals for post-model override)
+    # ── Step 5: Predict ───────────────────────────────────────────────────────
     prediction = predict(features, metaculus_p=metaculus_p, polymarket_p=polymarket_p)
-
-    # Build event lookup
     events_by_id = {e.event_id: e for e in deduped}
-
-    # SHAP attribution
     attribution = compute_shap_attribution(features, provenance, events_by_id)
-
-    # Drift detection
     drift_flags = detect_drift(features)
 
-    # Format and print
+    # ── Step 6: Format + print ────────────────────────────────────────────────
     output = format_output(question, prediction, attribution, features, len(deduped), drift_flags)
     sys.stdout.buffer.write(("\n" + output + "\n").encode("utf-8", errors="replace"))
     sys.stdout.buffer.flush()
 
-    # Save prediction
+    # ── Step 7: Save JSON prediction (existing path) ──────────────────────────
     path = save_prediction(question, prediction, attribution, features, provenance, len(deduped))
     print(f"\nSaved: {path}")
 
+    # ── Step 8: Write to lakehouse (non-fatal) ────────────────────────────────
+    try:
+        init_schema()   # idempotent — no-op if tables already exist
+
+        # 8a. Raw events → raw_documents
+        raw_doc_ids = persist_raw_events(raw_events, as_of_time)
+
+        # 8b. Canonical events → canonical_documents + canonical_events
+        db_event_ids = persist_canonical_events(deduped, raw_doc_ids, as_of_time)
+
+        # 8c. Parsed question → questions
+        question_id = persist_question(pq, ood, as_of_time)
+
+        # 8d. Feature vector → feature_snapshots
+        snapshot_id = persist_feature_snapshot(
+            features, as_of_time, question_id, pq, db_event_ids
+        )
+
+        # 8e. Prediction → predictions
+        persist_prediction_record(prediction, question_id, snapshot_id, as_of_time, attribution)
+
+        logger.info(
+            "lakehouse: q=%s snap=%s events=%d",
+            question_id, snapshot_id, len(db_event_ids),
+        )
+    except Exception as e:
+        logger.warning("lakehouse write failed (non-fatal, prediction still saved): %s", e)
+
     if prediction.get("untrained"):
-        print("\n⚠  Model is UNTRAINED (need ≥30 labeled examples).")
+        print("\n  Model is UNTRAINED (need >=30 labeled examples).")
         print("   Run 'python main.py train' after labeling predictions.")
 
 
@@ -272,6 +299,20 @@ def cmd_label(args) -> None:
     train_path.write_text(json.dumps(training_record, indent=2))
     print(f"Added to training data: {train_path.name}")
 
+    # Also update the lakehouse (non-fatal)
+    try:
+        from data_layer.pipeline_hooks import persist_outcome
+        updated = persist_outcome(
+            question_raw_text=data["question"],
+            outcome=outcome,
+            resolver_source="user",
+            resolution_notes=f"Labeled via CLI: prediction_id={args.prediction_id}",
+        )
+        if updated:
+            print("Lakehouse updated: question resolved, feature_snapshot labeled.")
+    except Exception as e:
+        logger.debug("lakehouse outcome update failed (non-fatal): %s", e)
+
 
 def cmd_calibration(args) -> None:
     from pathlib import Path
@@ -311,6 +352,63 @@ def cmd_drift(args) -> None:
             print(f"  {f['feature']:35}  z={z_str}  [{f['status']}]")
 
 
+def cmd_db(args) -> None:
+    """Show lakehouse statistics and recent predictions."""
+    from data_layer.db import init_schema, schema_stats, get_db_path
+
+    init_schema()
+    print(f"Database : {get_db_path()}")
+
+    stats = schema_stats()
+    total = sum(v for v in stats.values() if v)
+    print(f"Total rows: {total:,}\n")
+
+    # Show only tables with data
+    has_data = {k: v for k, v in stats.items() if v}
+    if not has_data:
+        print("No data yet. Run: python main.py predict --question '...'")
+        return
+
+    print(f"{'Table':<40} {'Rows':>10}")
+    print("-" * 52)
+    for table, count in stats.items():
+        marker = " *" if count else ""
+        print(f"  {table:<38} {(count or 0):>10,}{marker}")
+
+    # Recent predictions
+    from data_layer.db import get_db, table_exists
+    if table_exists("predictions"):
+        db = get_db()
+        rows = db.execute("""
+            SELECT predicted_at, calibrated_prob, answer, model_id
+            FROM predictions
+            ORDER BY predicted_at DESC
+            LIMIT 5
+        """).fetchall()
+        if rows:
+            print(f"\nLast {len(rows)} predictions:")
+            for r in rows:
+                ts = str(r[0])[:16] if r[0] else "?"
+                print(f"  {ts}  p={r[1]:.3f}  {r[2]}  [{r[3]}]")
+
+    # Unresolved questions
+    if table_exists("questions"):
+        db = get_db()
+        n_open = db.execute(
+            "SELECT COUNT(*) FROM questions WHERE status = 'open'"
+        ).fetchone()[0]
+        n_resolved = db.execute(
+            "SELECT COUNT(*) FROM questions WHERE status = 'resolved'"
+        ).fetchone()[0]
+        print(f"\nQuestions: {n_open} open, {n_resolved} resolved")
+        if n_resolved > 0:
+            avg_brier = db.execute(
+                "SELECT AVG(brier_component) FROM predictions WHERE brier_component IS NOT NULL"
+            ).fetchone()[0]
+            if avg_brier is not None:
+                print(f"Mean Brier (resolved): {avg_brier:.4f}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Geopolitical Oracle")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -338,6 +436,9 @@ def main():
 
     p_drift = sub.add_parser("drift", help="Show drift report")
     p_drift.set_defaults(func=cmd_drift)
+
+    p_db = sub.add_parser("db", help="Show lakehouse database stats and recent predictions")
+    p_db.set_defaults(func=cmd_db)
 
     args = parser.parse_args()
     args.func(args)
