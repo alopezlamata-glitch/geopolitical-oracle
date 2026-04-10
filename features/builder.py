@@ -126,11 +126,13 @@ def build_features(
     all_prior4 = len(events_prior4d)
     feat["overall_accel"] = all_last3 / (all_prior4 + 0.1)
 
-    # Provenance for acceleration = all contributing events
+    # Provenance for acceleration — filtered by event type
     for ev in events_last3d + events_prior4d:
         w = _decay_weight(ev, now)
-        _add_prov("military_accel", ev.event_id, w)
-        _add_prov("protest_accel", ev.event_id, w)
+        if ev.event_type == "military_action":
+            _add_prov("military_accel", ev.event_id, w)
+        elif ev.event_type == "protest":
+            _add_prov("protest_accel", ev.event_id, w)
         _add_prov("overall_accel", ev.event_id, w)
 
     # ── Polarity ────────────────────────────────────────────────────────────

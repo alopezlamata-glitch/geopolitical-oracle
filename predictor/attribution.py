@@ -68,7 +68,7 @@ def compute_shap_attribution(
     # Sort
     all_contribs = sorted(event_contributions.items(), key=lambda x: x[1], reverse=True)
     positive = [(eid, c) for eid, c in all_contribs if c > 0][:5]
-    negative = [(eid, c) for eid, c in all_contribs if c < 0][-3:]
+    negative = sorted([(eid, c) for eid, c in event_contributions.items() if c < 0], key=lambda x: x[1])[:3]
 
     def _format_event(eid: str, contrib: float) -> dict:
         ev = events_by_id.get(eid)

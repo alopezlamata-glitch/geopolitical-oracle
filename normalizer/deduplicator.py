@@ -47,7 +47,8 @@ def _similarity(ev_a: CanonicalEvent, ev_b: CanonicalEvent) -> float:
 
 def _merge(primary: CanonicalEvent, duplicate: CanonicalEvent) -> CanonicalEvent:
     merged_doc_ids = list(set(primary.doc_ids + duplicate.doc_ids))
-    unique_sources = len({primary.source, duplicate.source})
+    # Accumulate: merged event is observed by both sources
+    unique_sources = min(primary.independent_sources + duplicate.independent_sources, 5)
     # Use the higher-severity event as base
     base = primary if primary.severity >= duplicate.severity else duplicate
     return CanonicalEvent(

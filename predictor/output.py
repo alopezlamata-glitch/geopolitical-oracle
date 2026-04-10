@@ -47,6 +47,7 @@ def format_output(
     hi = prediction["ci_hi"]
     ans = prediction["answer"]
     untrained = prediction.get("untrained", False)
+    ci_method = prediction.get("ci_method", "heuristic")
     verbal = _verbal(p)
     quality = _evidence_quality(features, n_events)
 
@@ -65,7 +66,7 @@ def format_output(
         row(f"  Question  : {question[:W-16]}"),
         row(f"  Answer    : {ans}"),
         row(f"  Probability : {p:.3f}  ({verbal})"),
-        row(f"  Calibrated  : {p:.3f}  [{lo:.2f}, {hi:.2f}]  80% CI"),
+        row(f"  Calibrated  : {p:.3f}  [{lo:.2f}, {hi:.2f}]  80% CI ({ci_method})"),
         row(f"  Raw model   : {raw:.3f}"),
         row(f"  Evidence quality: {quality}"),
     ]

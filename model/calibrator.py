@@ -63,6 +63,17 @@ def calibrate(model, X_val: np.ndarray, y_val: np.ndarray, feature_names: list[s
         pickle.dump(calibrator, f)
     logger.info("calibrator: saved (%s) to %s", method, _CALIBRATOR_PATH)
 
+    # Save conformal nonconformity scores for inference-time CI
+    calibrated_probs = calibrator.predict(raw_probs)
+    nonconformity = np.abs(y_val.astype(float) - calibrated_probs)
+    conformal_path = _MODEL_DIR / "conformal_scores.json"
+    conformal_path.write_text(json.dumps({
+        "scores": nonconformity.tolist(),
+        "n": len(nonconformity),
+        "method": method,
+    }))
+    logger.info("calibrator: saved %d conformal scores", len(nonconformity))
+
     # Compute ECE over 10 bins
     n_bins = 10
     bins = np.linspace(0, 1, n_bins + 1)
