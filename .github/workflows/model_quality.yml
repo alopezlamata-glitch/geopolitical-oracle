@@ -1,0 +1,59 @@
+name: Model Quality Gate
+
+on:
+  pull_request:
+    paths:
+      - "model/**"
+      - "features/**"
+      - "normalizer/**"
+      - "predictor/**"
+      - "collector/**"
+      - "scripts/backtest.py"
+      - "scripts/build_icews_training.py"
+      - "data/model/backtest_results.json"
+      - "tests/test_model_quality.py"
+  push:
+    branches: [main]
+    paths:
+      - "data/model/backtest_results.json"
+
+jobs:
+  quality-gate:
+    name: "Backtest quality thresholds"
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install test dependencies
+        run: pip install pytest scipy
+
+      - name: Assert quality thresholds
+        run: pytest tests/test_model_quality.py -v --tb=short
+
+      - name: Print backtest summary
+        if: always()
+        run: |
+          python - <<'EOF'
+          import json, sys
+          from pathlib import Path
+          p = Path("data/model/backtest_results.json")
+          if not p.exists():
+              print("backtest_results.json not found")
+              sys.exit(0)
+          d = json.loads(p.read_text())
+          agg = d.get("aggregate", {})
+          print("=== Backtest aggregate ===")
+          for k, v in agg.items():
+              if isinstance(v, (int, float)):
+                  print(f"  {k}: {v}")
+          folds = d.get("folds", [])
+          print(f"  n_folds: {len(folds)}")
+          print(f"  generated_at: {d.get('generated_at','?')}")
+          EOF

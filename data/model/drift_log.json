@@ -280,5 +280,222 @@
         "status": "DRIFTED"
       }
     ]
+  },
+  {
+    "timestamp": "2026-04-10T13:17:40.686912+00:00",
+    "n_history": 10,
+    "drifted_count": 4,
+    "features": [
+      {
+        "feature": "military_count_7d",
+        "z_score": 0.186,
+        "batch_mean": 12.9,
+        "train_mean": 22.5992,
+        "status": "stable"
+      },
+      {
+        "feature": "military_count_30d",
+        "z_score": 0.444,
+        "batch_mean": 12.9,
+        "train_mean": 93.1818,
+        "status": "stable"
+      },
+      {
+        "feature": "protest_count_7d",
+        "z_score": 0.099,
+        "batch_mean": 2.0,
+        "train_mean": 2.9855,
+        "status": "stable"
+      },
+      {
+        "feature": "protest_count_30d",
+        "z_score": 0.251,
+        "batch_mean": 2.0,
+        "train_mean": 14.6488,
+        "status": "stable"
+      },
+      {
+        "feature": "diplomatic_count_7d",
+        "z_score": 0.567,
+        "batch_mean": 0.0,
+        "train_mean": 31.5806,
+        "status": "stable"
+      },
+      {
+        "feature": "ceasefire_count_7d",
+        "z_score": 1.422,
+        "batch_mean": 9.5,
+        "train_mean": 2.6219,
+        "status": "stable"
+      },
+      {
+        "feature": "sanction_count_7d",
+        "z_score": 0.22,
+        "batch_mean": 0.4,
+        "train_mean": 1.4669,
+        "status": "stable"
+      },
+      {
+        "feature": "political_crisis_count_7d",
+        "z_score": 0.146,
+        "batch_mean": 0.0,
+        "train_mean": 0.8719,
+        "status": "stable"
+      },
+      {
+        "feature": "military_intensity_7d",
+        "z_score": 0.324,
+        "batch_mean": 3.0657,
+        "train_mean": 24.5698,
+        "status": "stable"
+      },
+      {
+        "feature": "protest_intensity_7d",
+        "z_score": 0.293,
+        "batch_mean": 0.0,
+        "train_mean": 2.8773,
+        "status": "stable"
+      },
+      {
+        "feature": "overall_intensity_7d",
+        "z_score": 0.525,
+        "batch_mean": 7.1876,
+        "train_mean": 99.0787,
+        "status": "stable"
+      },
+      {
+        "feature": "military_accel",
+        "z_score": 1.607,
+        "batch_mean": 21.5744,
+        "train_mean": 2.6919,
+        "status": "stable"
+      },
+      {
+        "feature": "protest_accel",
+        "z_score": 0.263,
+        "batch_mean": 0.3998,
+        "train_mean": 2.9158,
+        "status": "stable"
+      },
+      {
+        "feature": "overall_accel",
+        "z_score": 8.815,
+        "batch_mean": 108.7927,
+        "train_mean": 2.1587,
+        "status": "DRIFTED"
+      },
+      {
+        "feature": "avg_polarity_7d",
+        "z_score": 0.0,
+        "batch_mean": -0.0901,
+        "train_mean": -0.0901,
+        "status": "stable"
+      },
+      {
+        "feature": "avg_polarity_30d",
+        "z_score": 0.033,
+        "batch_mean": -0.0901,
+        "train_mean": -0.0943,
+        "status": "stable"
+      },
+      {
+        "feature": "tone_trend",
+        "z_score": 0.392,
+        "batch_mean": 0.0818,
+        "train_mean": 0.0019,
+        "status": "stable"
+      },
+      {
+        "feature": "source_diversity_7d",
+        "z_score": 0.291,
+        "batch_mean": 0.1522,
+        "train_mean": 0.214,
+        "status": "stable"
+      },
+      {
+        "feature": "avg_independent_sources",
+        "z_score": 0.574,
+        "batch_mean": 1.0071,
+        "train_mean": 0.6421,
+        "status": "stable"
+      },
+      {
+        "feature": "avg_contradiction_score",
+        "z_score": 98531.778,
+        "batch_mean": 0.0,
+        "train_mean": 0.1,
+        "status": "DRIFTED"
+      },
+      {
+        "feature": "fatalities_7d",
+        "z_score": 0.0,
+        "batch_mean": 0.0,
+        "train_mean": 0.0,
+        "status": "stable"
+      },
+      {
+        "feature": "has_military_7d",
+        "z_score": 0.577,
+        "batch_mean": 1.0,
+        "train_mean": 0.75,
+        "status": "stable"
+      },
+      {
+        "feature": "has_ceasefire_7d",
+        "z_score": 0.913,
+        "batch_mean": 1.0,
+        "train_mean": 0.5455,
+        "status": "stable"
+      },
+      {
+        "feature": "escalation_index",
+        "z_score": 0.361,
+        "batch_mean": 0.2157,
+        "train_mean": 23.7832,
+        "status": "stable"
+      },
+      {
+        "feature": "metaculus_p",
+        "z_score": 0.0,
+        "batch_mean": -1.0,
+        "train_mean": -1.0,
+        "status": "stable"
+      },
+      {
+        "feature": "polymarket_p",
+        "z_score": 0.0,
+        "batch_mean": -1.0,
+        "train_mean": -1.0,
+        "status": "stable"
+      },
+      {
+        "feature": "market_available",
+        "z_score": 0.0,
+        "batch_mean": 0.0,
+        "train_mean": 0.0,
+        "status": "stable"
+      },
+      {
+        "feature": "acled_military_90d",
+        "z_score": 10.5,
+        "batch_mean": 10.5,
+        "train_mean": 0.0,
+        "status": "DRIFTED"
+      },
+      {
+        "feature": "acled_fatalities_90d",
+        "z_score": 125.5,
+        "batch_mean": 125.5,
+        "train_mean": 0.0,
+        "status": "DRIFTED"
+      },
+      {
+        "feature": "acled_conflict_active",
+        "z_score": 1.0,
+        "batch_mean": 1.0,
+        "train_mean": 0.0,
+        "status": "stable"
+      }
+    ]
   }
 ]
