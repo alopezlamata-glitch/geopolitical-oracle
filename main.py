@@ -117,8 +117,8 @@ def cmd_predict(args) -> None:
     event_ids = [e.event_id for e in deduped]
     save_features(question, features, provenance, event_ids)
 
-    # Predict
-    prediction = predict(features)
+    # Predict (pass market signals for post-model override)
+    prediction = predict(features, metaculus_p=metaculus_p, polymarket_p=polymarket_p)
 
     # Build event lookup
     events_by_id = {e.event_id: e for e in deduped}

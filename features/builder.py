@@ -14,43 +14,41 @@ logger = logging.getLogger(__name__)
 _DECAY_HALFLIFE_DAYS = 7.0
 
 # ── Feature registry ──────────────────────────────────────────────────────────
-# Changes from v1 (30 features) → v2 (32 features):
+# Changes from v2 (32 features) → v3 (27 features):
 #
-#   REMOVED (3): acled_military_90d, acled_fatalities_90d, acled_conflict_active
-#     Reason: always 0.0 in training data (ICEWS source has no ACLED events);
-#     model never learned the relationship → dead weight at inference too.
-#     Re-add when historical ACLED data is integrated into training.
+#   REMOVED (8): features with 0.0 XGBoost importance (never used by model)
+#     political_crisis_count_7d  — too rare in ICEWS training data
+#     avg_contradiction_score    — always ~0, ICEWS has no cross-source contradiction
+#     fatalities_7d              — ICEWS events lack casualty data (always 0)
+#     metaculus_p, metaculus_available   — 0% of training has real market data
+#     polymarket_p, polymarket_available — same
+#     market_available                   — same
+#     Market signals are now applied as a post-model override in predictor/inference.py
 #
-#   CHANGED (3): metaculus_p, polymarket_p, market_available
-#     sentinel changed from -1.0 → 0.0 when unavailable.
-#     Two new binary availability flags added (metaculus_available, polymarket_available)
-#     so the model knows to ignore the p value when it's a default 0.5.
-#
-#   ADDED (3): country_conflict_baserate, country_polity_norm, country_mil_spending_norm
-#     Static structural prior per country (see features/country_data.py).
-#     These anchor the prediction before reading any news:
-#       conflict_baserate — fraction of years with active conflict (UCDP 2000-2023)
-#       polity_norm       — Polity5 score normalized to [-1, +1]
-#       mil_spending_norm — military % of GDP / 10  (SIPRI 2022)
+#   ADDED (3): informative derived features replacing the removed ones
+#     ceasefire_ratio_7d  — ceasefire_count_7d / (military_count_7d + 0.1)
+#                           captures de-escalation pressure relative to conflict level
+#     event_velocity_7d   — events_7d / (events_30d/4.3 + 0.1)
+#                           detects acceleration vs rolling baseline (>1 = accelerating)
+#     military_share_7d   — military_count_7d / (total_events_7d + 0.1)
+#                           conflict concentration: how military-dominated is the news?
 
 _FEATURE_NAMES = [
-    # ── Event-derived features (24) ──────────────────────────────────────────
+    # ── Event-derived features (21) ──────────────────────────────────────────
     "military_count_7d", "military_count_30d",
     "protest_count_7d", "protest_count_30d",
     "diplomatic_count_7d", "ceasefire_count_7d",
-    "sanction_count_7d", "political_crisis_count_7d",
+    "sanction_count_7d",
     "military_intensity_7d", "protest_intensity_7d", "overall_intensity_7d",
     "military_accel", "protest_accel", "overall_accel",
     "avg_polarity_7d", "avg_polarity_30d", "tone_trend",
-    "source_diversity_7d", "avg_independent_sources", "avg_contradiction_score",
-    "fatalities_7d", "has_military_7d", "has_ceasefire_7d",
+    "source_diversity_7d", "avg_independent_sources",
+    "has_military_7d", "has_ceasefire_7d",
     "escalation_index",
-    # ── Market signals (5) ────────────────────────────────────────────────────
-    # metaculus_p / polymarket_p: 0.5 when unavailable (neutral prior), not -1
-    # *_available: 1.0 when the market has real data, 0.0 otherwise
-    "metaculus_p", "metaculus_available",
-    "polymarket_p", "polymarket_available",
-    "market_available",
+    # ── Derived ratio features (3) ────────────────────────────────────────────
+    "ceasefire_ratio_7d",   # ceasefire_count_7d / (military_count_7d + 0.1)
+    "event_velocity_7d",    # events_7d / (events_30d/4.3 + 0.1)  — >1 means accelerating
+    "military_share_7d",    # military_count_7d / (total_events_7d + 0.1)
     # ── Structural country features (3) ───────────────────────────────────────
     "country_conflict_baserate",   # UCDP: fraction of years 2000-2023 with conflict
     "country_polity_norm",         # Polity5 / 10: -1 (autocracy) to +1 (democracy)
@@ -69,8 +67,8 @@ def _quality_weight(event: CanonicalEvent) -> float:
 
 def build_features(
     events: list[CanonicalEvent],
-    metaculus_p: Optional[float] = None,
-    polymarket_p: Optional[float] = None,
+    metaculus_p: Optional[float] = None,   # passed through for caller use; NOT in feature vector
+    polymarket_p: Optional[float] = None,  # passed through for caller use; NOT in feature vector
     country: Optional[str] = None,
     now: Optional[datetime] = None,
 ) -> tuple[dict[str, float], dict[str, list[dict]]]:
@@ -80,10 +78,13 @@ def build_features(
 
     Args:
         events      : normalized, deduplicated events for the question
-        metaculus_p : Metaculus community probability (None if unavailable)
-        polymarket_p: Polymarket YES price (None if unavailable)
+        metaculus_p : passed through for market override — NOT added to feature vector
+        polymarket_p: passed through for market override — NOT added to feature vector
         country     : country name for structural features lookup
         now         : reference time (defaults to UTC now)
+
+    Market signals are applied as a post-model override in predictor/inference.py,
+    not as XGBoost input features, because 0% of ICEWS training examples have market data.
     """
     if now is None:
         now = datetime.now(timezone.utc)
@@ -121,9 +122,6 @@ def build_features(
         elif ev.event_type == "sanction":
             feat["sanction_count_7d"] += 1
             _add_prov("sanction_count_7d", ev.event_id, 1.0)
-        elif ev.event_type == "political_crisis":
-            feat["political_crisis_count_7d"] += 1
-            _add_prov("political_crisis_count_7d", ev.event_id, 1.0)
 
     for ev in events_30d:
         if ev.event_type == "military_action":
@@ -214,17 +212,11 @@ def build_features(
         n_domains = len(all_domains_7d) if all_domains_7d else len({e.source for e in events_7d})
         feat["source_diversity_7d"] = min(1.0, n_domains / max(len(events_7d), 1))
         feat["avg_independent_sources"] = sum(e.independent_sources for e in events_7d) / len(events_7d)
-        feat["avg_contradiction_score"] = sum(e.contradiction_score for e in events_7d) / len(events_7d)
         for ev in events_7d:
             _add_prov("source_diversity_7d", ev.event_id, 1.0)
             _add_prov("avg_independent_sources", ev.event_id, 1.0)
-            _add_prov("avg_contradiction_score", ev.event_id, 1.0)
 
     # ── Escalation signals ───────────────────────────────────────────────────
-
-    for ev in events_7d:
-        feat["fatalities_7d"] += ev.fatalities
-        _add_prov("fatalities_7d", ev.event_id, float(ev.fatalities) if ev.fatalities > 0 else 0.1)
 
     has_mil = any(e.event_type == "military_action" for e in events_7d)
     has_cease = any(e.event_type == "ceasefire_signal" for e in events_7d)
@@ -242,24 +234,22 @@ def build_features(
         w = _decay_weight(ev, now) * _quality_weight(ev)
         _add_prov("escalation_index", ev.event_id, w)
 
-    # ── Market signals ───────────────────────────────────────────────────────
-    # Sentinel is 0.5 (neutral prior) when unavailable, NOT -1.
-    # Separate *_available flags tell the model whether to trust the p value.
+    # ── Derived ratio features ────────────────────────────────────────────────
+    # These capture relative dynamics that raw counts miss.
 
-    meta_avail = metaculus_p is not None and 0.0 < metaculus_p < 1.0
-    poly_avail = polymarket_p is not None and 0.0 < polymarket_p < 1.0
+    total_events_7d = len(events_7d)
+    total_events_30d = len(events_30d)
 
-    feat["metaculus_p"] = float(metaculus_p) if meta_avail else 0.5
-    feat["metaculus_available"] = 1.0 if meta_avail else 0.0
-    feat["polymarket_p"] = float(polymarket_p) if poly_avail else 0.5
-    feat["polymarket_available"] = 1.0 if poly_avail else 0.0
-    feat["market_available"] = float(meta_avail or poly_avail)
+    feat["ceasefire_ratio_7d"] = feat["ceasefire_count_7d"] / (feat["military_count_7d"] + 0.1)
+    feat["event_velocity_7d"] = total_events_7d / (total_events_30d / 4.3 + 0.1)
+    feat["military_share_7d"] = feat["military_count_7d"] / (total_events_7d + 0.1)
 
-    prov["metaculus_p"] = []
-    prov["polymarket_p"] = []
-    prov["market_available"] = []
-    prov["metaculus_available"] = []
-    prov["polymarket_available"] = []
+    for ev in events_7d:
+        _add_prov("ceasefire_ratio_7d", ev.event_id, 1.0)
+        _add_prov("event_velocity_7d", ev.event_id, 1.0)
+        _add_prov("military_share_7d", ev.event_id, 1.0)
+    for ev in events_30d:
+        _add_prov("event_velocity_7d", ev.event_id, 0.5)
 
     # ── Structural country features (no events, static lookup) ───────────────
     # These are the same regardless of the query window.

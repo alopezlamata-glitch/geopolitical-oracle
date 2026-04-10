@@ -279,6 +279,9 @@ def _build_features(events: list[dict], window_end: datetime, country: str = "")
     from features.country_data import get_country_features
     struct = get_country_features(country)
 
+    total7 = len(evs7)
+    total30 = len(evs30)
+
     return {
         "military_count_7d": float(mil7),
         "military_count_30d": float(mil30),
@@ -287,7 +290,6 @@ def _build_features(events: list[dict], window_end: datetime, country: str = "")
         "diplomatic_count_7d": float(cnt(evs7, "diplomatic_statement")),
         "ceasefire_count_7d": float(cease7),
         "sanction_count_7d": float(cnt(evs7, "sanction")),
-        "political_crisis_count_7d": float(cnt(evs7, "political_crisis")),
         "military_intensity_7d": mil_int7,
         "protest_intensity_7d": pro_int7,
         "overall_intensity_7d": overall_int7,
@@ -298,18 +300,14 @@ def _build_features(events: list[dict], window_end: datetime, country: str = "")
         "avg_polarity_30d": pol30,
         "tone_trend": pol_trend,
         "source_diversity_7d": src_div,
-        "avg_independent_sources": min(3.0, len(sources) / max(len(evs7), 1) * 3),
-        "avg_contradiction_score": 0.1,
-        "fatalities_7d": 0.0,   # ICEWS doesn't record fatalities
+        "avg_independent_sources": min(3.0, len(sources) / max(total7, 1) * 3),
         "has_military_7d": float(mil7 > 0),
         "has_ceasefire_7d": float(cease7 > 0),
         "escalation_index": mil_int7 - cease7 * 0.3,
-        # Market signals: not available in historical training data
-        "metaculus_p": 0.5,     # neutral prior (no market available)
-        "metaculus_available": 0.0,
-        "polymarket_p": 0.5,
-        "polymarket_available": 0.0,
-        "market_available": 0.0,
+        # Derived ratio features (v3)
+        "ceasefire_ratio_7d": float(cease7) / (float(mil7) + 0.1),
+        "event_velocity_7d": float(total7) / (float(total30) / 4.3 + 0.1),
+        "military_share_7d": float(mil7) / (float(total7) + 0.1),
         # Structural country features from country_data.py (real signal, not zero)
         **struct,
     }

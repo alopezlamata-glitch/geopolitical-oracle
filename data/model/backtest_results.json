@@ -1,218 +1,224 @@
 {
-  "generated_at": "2026-04-10T18:58:54.595579+00:00",
+  "generated_at": "2026-04-10T19:15:24.614779+00:00",
   "aggregate": {
     "n_folds": 10,
-    "brier_weighted": 0.1074,
-    "brier_skill_weighted": 0.4451,
-    "roc_auc_weighted": 0.9094,
-    "ece_weighted": 0.0665,
+    "brier_weighted": 0.1086,
+    "brier_skill_weighted": 0.4387,
+    "roc_auc_weighted": 0.9089,
+    "ece_weighted": 0.0591,
     "ece_by_range": {
-      "low": 0.1495,
-      "mid": 0.1099,
-      "high": 0.0391
+      "low": 0.1661,
+      "mid": 0.0821,
+      "high": 0.0399
     },
-    "conformal_coverage_80_avg": 0.814,
+    "conformal_coverage_80_avg": 0.8004,
     "conformal_target": 0.8,
     "reliability_diagram": [
       {
         "bin": "[0.0,0.1)",
         "n": 91,
-        "mean_pred": 0.012,
-        "mean_actual": 0.121
+        "mean_pred": 0.013,
+        "mean_actual": 0.143
       },
       {
         "bin": "[0.1,0.2)",
-        "n": 30,
-        "mean_pred": 0.152,
-        "mean_actual": 0.3
+        "n": 8,
+        "mean_pred": 0.16,
+        "mean_actual": 0.5
       },
       {
         "bin": "[0.2,0.3)",
-        "n": 17,
-        "mean_pred": 0.236,
-        "mean_actual": 0.235
+        "n": 15,
+        "mean_pred": 0.241,
+        "mean_actual": 0.267
       },
       {
         "bin": "[0.3,0.4)",
-        "n": 31,
-        "mean_pred": 0.345,
-        "mean_actual": 0.452
+        "n": 57,
+        "mean_pred": 0.344,
+        "mean_actual": 0.333
       },
       {
         "bin": "[0.4,0.5)",
-        "n": 85,
-        "mean_pred": 0.465,
-        "mean_actual": 0.436
+        "n": 89,
+        "mean_pred": 0.435,
+        "mean_actual": 0.427
       },
       {
         "bin": "[0.5,0.6)",
-        "n": 93,
-        "mean_pred": 0.528,
-        "mean_actual": 0.516
+        "n": 85,
+        "mean_pred": 0.543,
+        "mean_actual": 0.541
       },
       {
         "bin": "[0.6,0.7)",
-        "n": 30,
-        "mean_pred": 0.632,
-        "mean_actual": 0.667
+        "n": 37,
+        "mean_pred": 0.654,
+        "mean_actual": 0.622
       },
       {
         "bin": "[0.7,0.8)",
-        "n": 24,
-        "mean_pred": 0.765,
-        "mean_actual": 0.708
+        "n": 9,
+        "mean_pred": 0.747,
+        "mean_actual": 0.667
       },
       {
         "bin": "[0.8,0.9)",
-        "n": 54,
-        "mean_pred": 0.842,
-        "mean_actual": 0.833
+        "n": 74,
+        "mean_pred": 0.874,
+        "mean_actual": 0.797
       },
       {
         "bin": "[0.9,1.0)",
-        "n": 532,
-        "mean_pred": 0.986,
-        "mean_actual": 0.974
+        "n": 522,
+        "mean_pred": 0.99,
+        "mean_actual": 0.979
       }
     ]
   },
   "within_era_aggregate": {
     "n_folds": 8,
-    "brier_weighted": 0.1004,
-    "brier_skill_weighted": 0.4359,
-    "roc_auc_weighted": 0.9191,
-    "ece_weighted": 0.0849,
+    "brier_weighted": 0.1006,
+    "brier_skill_weighted": 0.4346,
+    "roc_auc_weighted": 0.9225,
+    "ece_weighted": 0.0823,
     "ece_by_range": {
-      "low": 0.1566,
-      "mid": 0.2053,
-      "high": 0.0473
+      "low": 0.2139,
+      "mid": 0.1447,
+      "high": 0.0454
     },
-    "conformal_coverage_80_avg": 0.8195,
+    "conformal_coverage_80_avg": 0.8064,
     "conformal_target": 0.8,
     "reliability_diagram": [
       {
         "bin": "[0.0,0.1)",
         "n": 25,
-        "mean_pred": 0.011,
+        "mean_pred": 0.012,
         "mean_actual": 0.12
       },
       {
         "bin": "[0.1,0.2)",
-        "n": 6,
-        "mean_pred": 0.164,
-        "mean_actual": 0.333
+        "n": 8,
+        "mean_pred": 0.16,
+        "mean_actual": 0.5
       },
       {
         "bin": "[0.2,0.3)",
-        "n": 17,
-        "mean_pred": 0.236,
-        "mean_actual": 0.235
+        "n": 14,
+        "mean_pred": 0.243,
+        "mean_actual": 0.214
       },
       {
         "bin": "[0.3,0.4)",
-        "n": 31,
-        "mean_pred": 0.345,
-        "mean_actual": 0.452
+        "n": 35,
+        "mean_pred": 0.34,
+        "mean_actual": 0.372
       },
       {
         "bin": "[0.4,0.5)",
-        "n": 18,
-        "mean_pred": 0.408,
-        "mean_actual": 0.333
+        "n": 14,
+        "mean_pred": 0.416,
+        "mean_actual": 0.429
       },
       {
         "bin": "[0.5,0.6)",
-        "n": 22,
-        "mean_pred": 0.539,
-        "mean_actual": 0.591
+        "n": 19,
+        "mean_pred": 0.537,
+        "mean_actual": 0.579
       },
       {
         "bin": "[0.6,0.7)",
-        "n": 12,
-        "mean_pred": 0.675,
+        "n": 18,
+        "mean_pred": 0.65,
         "mean_actual": 0.5
       },
       {
         "bin": "[0.7,0.8)",
-        "n": 7,
-        "mean_pred": 0.729,
-        "mean_actual": 0.572
+        "n": 8,
+        "mean_pred": 0.744,
+        "mean_actual": 0.625
       },
       {
         "bin": "[0.8,0.9)",
-        "n": 8,
-        "mean_pred": 0.832,
-        "mean_actual": 0.5
+        "n": 15,
+        "mean_pred": 0.868,
+        "mean_actual": 0.8
       },
       {
         "bin": "[0.9,1.0)",
-        "n": 263,
-        "mean_pred": 0.992,
-        "mean_actual": 0.97
+        "n": 253,
+        "mean_pred": 0.996,
+        "mean_actual": 0.968
       }
     ]
   },
   "cross_era_aggregate": {
     "n_folds": 2,
-    "brier_weighted": 0.1123,
-    "brier_skill_weighted": 0.4516,
-    "roc_auc_weighted": 0.9025,
-    "ece_weighted": 0.0535,
+    "brier_weighted": 0.1143,
+    "brier_skill_weighted": 0.4416,
+    "roc_auc_weighted": 0.8993,
+    "ece_weighted": 0.0426,
     "ece_by_range": {
-      "low": 0.146,
-      "mid": 0.0423,
-      "high": 0.0333
+      "low": 0.1461,
+      "mid": 0.0378,
+      "high": 0.036
     },
-    "conformal_coverage_80_avg": 0.7921,
+    "conformal_coverage_80_avg": 0.7765,
     "conformal_target": 0.8,
     "reliability_diagram": [
       {
         "bin": "[0.0,0.1)",
         "n": 66,
-        "mean_pred": 0.013,
-        "mean_actual": 0.121
+        "mean_pred": 0.014,
+        "mean_actual": 0.152
       },
       {
-        "bin": "[0.1,0.2)",
-        "n": 24,
-        "mean_pred": 0.149,
-        "mean_actual": 0.292
+        "bin": "[0.2,0.3)",
+        "n": 1,
+        "mean_pred": 0.208,
+        "mean_actual": 1.0
+      },
+      {
+        "bin": "[0.3,0.4)",
+        "n": 22,
+        "mean_pred": 0.35,
+        "mean_actual": 0.273
       },
       {
         "bin": "[0.4,0.5)",
-        "n": 67,
-        "mean_pred": 0.481,
-        "mean_actual": 0.463
+        "n": 75,
+        "mean_pred": 0.438,
+        "mean_actual": 0.427
       },
       {
         "bin": "[0.5,0.6)",
-        "n": 71,
-        "mean_pred": 0.524,
-        "mean_actual": 0.493
+        "n": 66,
+        "mean_pred": 0.544,
+        "mean_actual": 0.531
       },
       {
         "bin": "[0.6,0.7)",
-        "n": 18,
-        "mean_pred": 0.603,
-        "mean_actual": 0.778
+        "n": 19,
+        "mean_pred": 0.658,
+        "mean_actual": 0.737
       },
       {
         "bin": "[0.7,0.8)",
-        "n": 17,
-        "mean_pred": 0.78,
-        "mean_actual": 0.765
+        "n": 1,
+        "mean_pred": 0.769,
+        "mean_actual": 1.0
       },
       {
         "bin": "[0.8,0.9)",
-        "n": 46,
-        "mean_pred": 0.844,
-        "mean_actual": 0.891
+        "n": 59,
+        "mean_pred": 0.875,
+        "mean_actual": 0.797
       },
       {
         "bin": "[0.9,1.0)",
         "n": 269,
-        "mean_pred": 0.979,
-        "mean_actual": 0.978
+        "mean_pred": 0.985,
+        "mean_actual": 0.989
       }
     ]
   },
@@ -224,68 +230,68 @@
       "n_cal": 68,
       "n_test": 53,
       "base_rate": 0.792,
-      "brier": 0.0785,
-      "brier_skill": 0.5227,
-      "roc_auc": 0.9545,
-      "ece": 0.0903,
+      "brier": 0.0766,
+      "brier_skill": 0.534,
+      "roc_auc": 0.961,
+      "ece": 0.0842,
       "ece_by_range": {
-        "low": 0.1518,
-        "mid": 0.2819,
-        "high": 0.0312
+        "low": 0.155,
+        "mid": 0.1873,
+        "high": 0.0216
       },
       "conformal_coverage_80": {
-        "coverage": 0.8491,
+        "coverage": 0.8302,
         "n_test": 53,
-        "q_pos": 0.1958,
-        "q_neg": 0.6904
+        "q_pos": 0.2331,
+        "q_neg": 0.6228
       },
       "reliability": [
         {
           "bin": "[0.1,0.2)",
-          "n": 3,
-          "mean_pred": 0.182,
-          "mean_actual": 0.333
+          "n": 4,
+          "mean_pred": 0.165,
+          "mean_actual": 0.25
         },
         {
           "bin": "[0.2,0.3)",
-          "n": 6,
-          "mean_pred": 0.241,
-          "mean_actual": 0.167
+          "n": 9,
+          "mean_pred": 0.247,
+          "mean_actual": 0.222
         },
         {
           "bin": "[0.3,0.4)",
-          "n": 5,
-          "mean_pred": 0.34,
-          "mean_actual": 0.4
+          "n": 1,
+          "mean_pred": 0.357,
+          "mean_actual": 1.0
         },
         {
           "bin": "[0.4,0.5)",
-          "n": 2,
+          "n": 1,
           "mean_pred": 0.41,
           "mean_actual": 1.0
         },
         {
           "bin": "[0.5,0.6)",
-          "n": 1,
-          "mean_pred": 0.514,
+          "n": 2,
+          "mean_pred": 0.523,
           "mean_actual": 1.0
         },
         {
           "bin": "[0.6,0.7)",
           "n": 1,
-          "mean_pred": 0.603,
+          "mean_pred": 0.693,
           "mean_actual": 0.0
         },
         {
           "bin": "[0.7,0.8)",
           "n": 1,
-          "mean_pred": 0.746,
+          "mean_pred": 0.711,
           "mean_actual": 1.0
         },
         {
           "bin": "[0.9,1.0)",
           "n": 34,
-          "mean_pred": 0.969,
+          "mean_pred": 0.978,
           "mean_actual": 1.0
         }
       ]
@@ -297,68 +303,80 @@
       "n_cal": 79,
       "n_test": 53,
       "base_rate": 0.774,
-      "brier": 0.0973,
-      "brier_skill": 0.4445,
-      "roc_auc": 0.9248,
-      "ece": 0.0792,
+      "brier": 0.0984,
+      "brier_skill": 0.4381,
+      "roc_auc": 0.9187,
+      "ece": 0.0895,
       "ece_by_range": {
-        "low": 0.1778,
-        "mid": 0.2152,
-        "high": 0.0447
+        "low": 0.367,
+        "mid": 0.1328,
+        "high": 0.0064
       },
       "conformal_coverage_80": {
-        "coverage": 0.7547,
+        "coverage": 0.7358,
         "n_test": 53,
-        "q_pos": 0.0454,
-        "q_neg": 0.4639
+        "q_pos": 0.0966,
+        "q_neg": 0.4593
       },
       "reliability": [
         {
           "bin": "[0.0,0.1)",
           "n": 3,
-          "mean_pred": 0.061,
+          "mean_pred": 0.056,
           "mean_actual": 0.0
         },
         {
           "bin": "[0.1,0.2)",
           "n": 2,
-          "mean_pred": 0.148,
-          "mean_actual": 0.5
+          "mean_pred": 0.166,
+          "mean_actual": 1.0
         },
         {
           "bin": "[0.2,0.3)",
-          "n": 3,
-          "mean_pred": 0.23,
-          "mean_actual": 0.333
+          "n": 2,
+          "mean_pred": 0.215,
+          "mean_actual": 0.0
+        },
+        {
+          "bin": "[0.3,0.4)",
+          "n": 2,
+          "mean_pred": 0.358,
+          "mean_actual": 0.5
         },
         {
           "bin": "[0.4,0.5)",
-          "n": 3,
-          "mean_pred": 0.434,
-          "mean_actual": 0.333
+          "n": 2,
+          "mean_pred": 0.438,
+          "mean_actual": 0.5
         },
         {
           "bin": "[0.5,0.6)",
           "n": 4,
-          "mean_pred": 0.519,
-          "mean_actual": 0.75
+          "mean_pred": 0.559,
+          "mean_actual": 0.5
+        },
+        {
+          "bin": "[0.6,0.7)",
+          "n": 1,
+          "mean_pred": 0.649,
+          "mean_actual": 0.0
         },
         {
           "bin": "[0.7,0.8)",
-          "n": 3,
-          "mean_pred": 0.736,
-          "mean_actual": 0.667
+          "n": 4,
+          "mean_pred": 0.745,
+          "mean_actual": 0.5
         },
         {
           "bin": "[0.8,0.9)",
-          "n": 3,
-          "mean_pred": 0.841,
-          "mean_actual": 0.333
+          "n": 1,
+          "mean_pred": 0.873,
+          "mean_actual": 1.0
         },
         {
           "bin": "[0.9,1.0)",
           "n": 32,
-          "mean_pred": 0.999,
+          "mean_pred": 0.997,
           "mean_actual": 1.0
         }
       ]
@@ -370,57 +388,63 @@
       "n_cal": 90,
       "n_test": 52,
       "base_rate": 0.769,
-      "brier": 0.1147,
-      "brier_skill": 0.3538,
-      "roc_auc": 0.9052,
-      "ece": 0.0859,
+      "brier": 0.1071,
+      "brier_skill": 0.3967,
+      "roc_auc": 0.9219,
+      "ece": 0.0749,
       "ece_by_range": {
-        "low": 0.4,
-        "mid": 0.145,
-        "high": 0.0
+        "low": 0.3534,
+        "mid": 0.0712,
+        "high": 0.004
       },
       "conformal_coverage_80": {
         "coverage": 0.8462,
         "n_test": 52,
-        "q_pos": 0.375,
-        "q_neg": 0.5455
+        "q_pos": 0.25,
+        "q_neg": 0.4
       },
       "reliability": [
         {
           "bin": "[0.0,0.1)",
           "n": 5,
-          "mean_pred": 0.0,
+          "mean_pred": 0.01,
           "mean_actual": 0.4
         },
         {
+          "bin": "[0.1,0.2)",
+          "n": 1,
+          "mean_pred": 0.172,
+          "mean_actual": 0.0
+        },
+        {
           "bin": "[0.2,0.3)",
-          "n": 6,
-          "mean_pred": 0.231,
+          "n": 2,
+          "mean_pred": 0.25,
+          "mean_actual": 0.5
+        },
+        {
+          "bin": "[0.3,0.4)",
+          "n": 9,
+          "mean_pred": 0.366,
           "mean_actual": 0.333
         },
         {
           "bin": "[0.4,0.5)",
           "n": 1,
-          "mean_pred": 0.413,
-          "mean_actual": 0.0
-        },
-        {
-          "bin": "[0.5,0.6)",
-          "n": 6,
-          "mean_pred": 0.545,
-          "mean_actual": 0.5
-        },
-        {
-          "bin": "[0.6,0.7)",
-          "n": 2,
-          "mean_pred": 0.636,
+          "mean_pred": 0.4,
           "mean_actual": 1.0
         },
         {
           "bin": "[0.7,0.8)",
-          "n": 2,
-          "mean_pred": 0.718,
-          "mean_actual": 0.5
+          "n": 3,
+          "mean_pred": 0.753,
+          "mean_actual": 0.667
+        },
+        {
+          "bin": "[0.8,0.9)",
+          "n": 1,
+          "mean_pred": 0.877,
+          "mean_actual": 1.0
         },
         {
           "bin": "[0.9,1.0)",
@@ -437,51 +461,57 @@
       "n_cal": 100,
       "n_test": 56,
       "base_rate": 0.768,
-      "brier": 0.0978,
-      "brier_skill": 0.4514,
-      "roc_auc": 0.8685,
-      "ece": 0.0925,
+      "brier": 0.1136,
+      "brier_skill": 0.3625,
+      "roc_auc": 0.856,
+      "ece": 0.1078,
       "ece_by_range": {
         "low": null,
-        "mid": 0.132,
-        "high": 0.0488
+        "mid": 0.1454,
+        "high": 0.05
       },
       "conformal_coverage_80": {
-        "coverage": 0.875,
+        "coverage": 0.8571,
         "n_test": 56,
-        "q_pos": 0.25,
-        "q_neg": 0.4
+        "q_pos": 0.3333,
+        "q_neg": 0.4286
       },
       "reliability": [
         {
           "bin": "[0.0,0.1)",
-          "n": 1,
+          "n": 2,
           "mean_pred": 0.0,
+          "mean_actual": 0.5
+        },
+        {
+          "bin": "[0.2,0.3)",
+          "n": 1,
+          "mean_pred": 0.25,
           "mean_actual": 0.0
         },
         {
           "bin": "[0.3,0.4)",
-          "n": 1,
-          "mean_pred": 0.333,
-          "mean_actual": 1.0
+          "n": 7,
+          "mean_pred": 0.357,
+          "mean_actual": 0.429
         },
         {
           "bin": "[0.4,0.5)",
-          "n": 12,
-          "mean_pred": 0.4,
-          "mean_actual": 0.25
-        },
-        {
-          "bin": "[0.7,0.8)",
-          "n": 1,
-          "mean_pred": 0.715,
+          "n": 3,
+          "mean_pred": 0.429,
           "mean_actual": 0.0
         },
         {
+          "bin": "[0.6,0.7)",
+          "n": 3,
+          "mean_pred": 0.667,
+          "mean_actual": 0.333
+        },
+        {
           "bin": "[0.9,1.0)",
-          "n": 41,
+          "n": 40,
           "mean_pred": 1.0,
-          "mean_actual": 0.951
+          "mean_actual": 0.95
         }
       ]
     },
@@ -492,56 +522,56 @@
       "n_cal": 111,
       "n_test": 51,
       "base_rate": 0.784,
-      "brier": 0.0963,
-      "brier_skill": 0.4309,
-      "roc_auc": 0.9227,
-      "ece": 0.0502,
+      "brier": 0.0763,
+      "brier_skill": 0.5489,
+      "roc_auc": 0.9659,
+      "ece": 0.0654,
       "ece_by_range": {
         "low": null,
-        "mid": 0.1271,
-        "high": 0.0113
+        "mid": 0.2895,
+        "high": 0.0136
       },
       "conformal_coverage_80": {
-        "coverage": 0.8235,
+        "coverage": 0.8039,
         "n_test": 51,
-        "q_pos": 0.1667,
-        "q_neg": 0.3667
+        "q_pos": 0.2,
+        "q_neg": 0.5714
       },
       "reliability": [
         {
           "bin": "[0.0,0.1)",
-          "n": 1,
-          "mean_pred": 0.011,
-          "mean_actual": 0.0
-        },
-        {
-          "bin": "[0.1,0.2)",
-          "n": 1,
-          "mean_pred": 0.144,
+          "n": 2,
+          "mean_pred": 0.0,
           "mean_actual": 0.0
         },
         {
           "bin": "[0.3,0.4)",
-          "n": 15,
-          "mean_pred": 0.364,
-          "mean_actual": 0.467
+          "n": 11,
+          "mean_pred": 0.32,
+          "mean_actual": 0.273
         },
         {
           "bin": "[0.5,0.6)",
-          "n": 1,
-          "mean_pred": 0.5,
+          "n": 4,
+          "mean_pred": 0.571,
+          "mean_actual": 1.0
+        },
+        {
+          "bin": "[0.6,0.7)",
+          "n": 2,
+          "mean_pred": 0.667,
           "mean_actual": 1.0
         },
         {
           "bin": "[0.8,0.9)",
-          "n": 4,
-          "mean_pred": 0.833,
-          "mean_actual": 0.75
+          "n": 3,
+          "mean_pred": 0.812,
+          "mean_actual": 0.667
         },
         {
           "bin": "[0.9,1.0)",
           "n": 29,
-          "mean_pred": 0.999,
+          "mean_pred": 1.0,
           "mean_actual": 1.0
         }
       ]
@@ -553,49 +583,55 @@
       "n_cal": 121,
       "n_test": 59,
       "base_rate": 0.78,
-      "brier": 0.0877,
-      "brier_skill": 0.4896,
-      "roc_auc": 0.9289,
-      "ece": 0.062,
+      "brier": 0.0894,
+      "brier_skill": 0.4799,
+      "roc_auc": 0.9206,
+      "ece": 0.0288,
       "ece_by_range": {
-        "low": 0.0,
-        "mid": 0.1926,
+        "low": null,
+        "mid": 0.081,
         "high": 0.0
       },
       "conformal_coverage_80": {
         "coverage": 0.8305,
         "n_test": 59,
-        "q_pos": 0.3077,
+        "q_pos": 0.3571,
         "q_neg": 0.5
       },
       "reliability": [
         {
           "bin": "[0.0,0.1)",
-          "n": 3,
+          "n": 2,
           "mean_pred": 0.0,
           "mean_actual": 0.0
         },
         {
           "bin": "[0.3,0.4)",
-          "n": 8,
-          "mean_pred": 0.321,
-          "mean_actual": 0.375
+          "n": 5,
+          "mean_pred": 0.306,
+          "mean_actual": 0.4
+        },
+        {
+          "bin": "[0.4,0.5)",
+          "n": 3,
+          "mean_pred": 0.4,
+          "mean_actual": 0.333
         },
         {
           "bin": "[0.5,0.6)",
           "n": 2,
           "mean_pred": 0.5,
-          "mean_actual": 1.0
+          "mean_actual": 0.5
         },
         {
           "bin": "[0.6,0.7)",
-          "n": 9,
-          "mean_pred": 0.692,
-          "mean_actual": 0.444
+          "n": 11,
+          "mean_pred": 0.639,
+          "mean_actual": 0.545
         },
         {
           "bin": "[0.9,1.0)",
-          "n": 37,
+          "n": 36,
           "mean_pred": 1.0,
           "mean_actual": 1.0
         }
@@ -608,57 +644,57 @@
       "n_cal": 133,
       "n_test": 67,
       "base_rate": 0.791,
-      "brier": 0.0629,
-      "brier_skill": 0.6197,
-      "roc_auc": 0.94,
-      "ece": 0.0474,
+      "brier": 0.0734,
+      "brier_skill": 0.5562,
+      "roc_auc": 0.9346,
+      "ece": 0.0476,
       "ece_by_range": {
-        "low": 0.0927,
-        "mid": 0.2877,
-        "high": 0.0495
+        "low": 0.0885,
+        "mid": 0.081,
+        "high": 0.0712
       },
       "conformal_coverage_80": {
-        "coverage": 0.9104,
+        "coverage": 0.8806,
         "n_test": 67,
-        "q_pos": 0.1,
-        "q_neg": 0.5833
+        "q_pos": 0.1111,
+        "q_neg": 0.5
       },
       "reliability": [
         {
           "bin": "[0.0,0.1)",
-          "n": 10,
-          "mean_pred": 0.007,
-          "mean_actual": 0.1
-        },
-        {
-          "bin": "[0.2,0.3)",
-          "n": 1,
-          "mean_pred": 0.224,
+          "n": 8,
+          "mean_pred": 0.011,
           "mean_actual": 0.0
         },
         {
-          "bin": "[0.3,0.4)",
+          "bin": "[0.1,0.2)",
           "n": 1,
-          "mean_pred": 0.3,
+          "mean_pred": 0.112,
           "mean_actual": 1.0
         },
         {
-          "bin": "[0.5,0.6)",
+          "bin": "[0.4,0.5)",
           "n": 4,
-          "mean_pred": 0.562,
+          "mean_pred": 0.414,
+          "mean_actual": 0.5
+        },
+        {
+          "bin": "[0.5,0.6)",
+          "n": 2,
+          "mean_pred": 0.571,
           "mean_actual": 0.5
         },
         {
           "bin": "[0.8,0.9)",
-          "n": 1,
-          "mean_pred": 0.8,
-          "mean_actual": 0.0
+          "n": 10,
+          "mean_pred": 0.883,
+          "mean_actual": 0.8
         },
         {
           "bin": "[0.9,1.0)",
-          "n": 50,
-          "mean_pred": 0.986,
-          "mean_actual": 0.98
+          "n": 42,
+          "mean_pred": 0.998,
+          "mean_actual": 0.976
         }
       ]
     },
@@ -669,50 +705,38 @@
       "n_cal": 147,
       "n_test": 18,
       "base_rate": 0.333,
-      "brier": 0.3336,
-      "brier_skill": -0.501,
-      "roc_auc": 0.875,
-      "ece": 0.3723,
+      "brier": 0.3244,
+      "brier_skill": -0.46,
+      "roc_auc": 0.8681,
+      "ece": 0.3494,
       "ece_by_range": {
-        "low": null,
-        "mid": 0.3104,
-        "high": 0.4833
+        "low": 0.0,
+        "mid": 0.3,
+        "high": 0.4789
       },
       "conformal_coverage_80": {
         "coverage": 0.6667,
         "n_test": 18,
-        "q_pos": 0.0417,
-        "q_neg": 0.5652
+        "q_pos": 0.0526,
+        "q_neg": 0.5
       },
       "reliability": [
         {
           "bin": "[0.0,0.1)",
-          "n": 2,
-          "mean_pred": 0.003,
-          "mean_actual": 0.0
-        },
-        {
-          "bin": "[0.2,0.3)",
-          "n": 1,
-          "mean_pred": 0.268,
-          "mean_actual": 0.0
-        },
-        {
-          "bin": "[0.3,0.4)",
-          "n": 1,
-          "mean_pred": 0.333,
+          "n": 3,
+          "mean_pred": 0.0,
           "mean_actual": 0.0
         },
         {
           "bin": "[0.5,0.6)",
-          "n": 4,
-          "mean_pred": 0.565,
-          "mean_actual": 0.25
+          "n": 5,
+          "mean_pred": 0.5,
+          "mean_actual": 0.2
         },
         {
           "bin": "[0.9,1.0)",
           "n": 10,
-          "mean_pred": 0.983,
+          "mean_pred": 0.979,
           "mean_actual": 0.5
         }
       ]
@@ -726,69 +750,63 @@
       "n_cal": 150,
       "n_test": 339,
       "base_rate": 0.714,
-      "brier": 0.0959,
-      "brier_skill": 0.5304,
-      "roc_auc": 0.9318,
-      "ece": 0.0497,
+      "brier": 0.0975,
+      "brier_skill": 0.5225,
+      "roc_auc": 0.926,
+      "ece": 0.0328,
       "ece_by_range": {
-        "low": 0.1164,
-        "mid": 0.0463,
-        "high": 0.0306
+        "low": 0.093,
+        "mid": 0.0398,
+        "high": 0.03
       },
       "conformal_coverage_80": {
-        "coverage": 0.7935,
+        "coverage": 0.7788,
         "n_test": 339,
-        "q_pos": 0.1579,
-        "q_neg": 0.4815
+        "q_pos": 0.1333,
+        "q_neg": 0.4375
       },
       "reliability": [
         {
           "bin": "[0.0,0.1)",
-          "n": 46,
+          "n": 43,
           "mean_pred": 0.0,
-          "mean_actual": 0.109
-        },
-        {
-          "bin": "[0.1,0.2)",
-          "n": 7,
-          "mean_pred": 0.167,
-          "mean_actual": 0.0
+          "mean_actual": 0.093
         },
         {
           "bin": "[0.4,0.5)",
-          "n": 67,
-          "mean_pred": 0.481,
-          "mean_actual": 0.463
+          "n": 75,
+          "mean_pred": 0.438,
+          "mean_actual": 0.427
         },
         {
           "bin": "[0.5,0.6)",
-          "n": 9,
-          "mean_pred": 0.531,
-          "mean_actual": 0.556
+          "n": 10,
+          "mean_pred": 0.562,
+          "mean_actual": 0.5
         },
         {
           "bin": "[0.6,0.7)",
-          "n": 18,
-          "mean_pred": 0.603,
-          "mean_actual": 0.778
+          "n": 19,
+          "mean_pred": 0.658,
+          "mean_actual": 0.737
         },
         {
           "bin": "[0.7,0.8)",
           "n": 1,
-          "mean_pred": 0.79,
+          "mean_pred": 0.769,
           "mean_actual": 1.0
         },
         {
           "bin": "[0.8,0.9)",
-          "n": 45,
-          "mean_pred": 0.843,
-          "mean_actual": 0.889
+          "n": 23,
+          "mean_pred": 0.866,
+          "mean_actual": 0.826
         },
         {
           "bin": "[0.9,1.0)",
-          "n": 146,
-          "mean_pred": 0.974,
-          "mean_actual": 1.0
+          "n": 168,
+          "mean_pred": 0.976,
+          "mean_actual": 0.994
         }
       ]
     },
@@ -799,57 +817,57 @@
       "n_cal": 218,
       "n_test": 239,
       "base_rate": 0.711,
-      "brier": 0.1356,
-      "brier_skill": 0.3398,
-      "roc_auc": 0.8609,
-      "ece": 0.0588,
+      "brier": 0.1382,
+      "brier_skill": 0.3268,
+      "roc_auc": 0.8615,
+      "ece": 0.0566,
       "ece_by_range": {
-        "low": 0.188,
-        "mid": 0.0367,
-        "high": 0.0372
+        "low": 0.2213,
+        "mid": 0.035,
+        "high": 0.0445
       },
       "conformal_coverage_80": {
-        "coverage": 0.7908,
+        "coverage": 0.7741,
         "n_test": 239,
-        "q_pos": 0.2222,
-        "q_neg": 0.5227
+        "q_pos": 0.1176,
+        "q_neg": 0.5405
       },
       "reliability": [
         {
           "bin": "[0.0,0.1)",
-          "n": 20,
-          "mean_pred": 0.043,
-          "mean_actual": 0.15
+          "n": 23,
+          "mean_pred": 0.04,
+          "mean_actual": 0.261
         },
         {
-          "bin": "[0.1,0.2)",
-          "n": 17,
-          "mean_pred": 0.141,
-          "mean_actual": 0.412
-        },
-        {
-          "bin": "[0.5,0.6)",
-          "n": 62,
-          "mean_pred": 0.523,
-          "mean_actual": 0.484
-        },
-        {
-          "bin": "[0.7,0.8)",
-          "n": 16,
-          "mean_pred": 0.779,
-          "mean_actual": 0.75
-        },
-        {
-          "bin": "[0.8,0.9)",
+          "bin": "[0.2,0.3)",
           "n": 1,
-          "mean_pred": 0.893,
+          "mean_pred": 0.208,
           "mean_actual": 1.0
         },
         {
+          "bin": "[0.3,0.4)",
+          "n": 22,
+          "mean_pred": 0.35,
+          "mean_actual": 0.273
+        },
+        {
+          "bin": "[0.5,0.6)",
+          "n": 56,
+          "mean_pred": 0.541,
+          "mean_actual": 0.536
+        },
+        {
+          "bin": "[0.8,0.9)",
+          "n": 36,
+          "mean_pred": 0.881,
+          "mean_actual": 0.778
+        },
+        {
           "bin": "[0.9,1.0)",
-          "n": 123,
-          "mean_pred": 0.986,
-          "mean_actual": 0.951
+          "n": 101,
+          "mean_pred": 1.0,
+          "mean_actual": 0.98
         }
       ]
     }

@@ -71,9 +71,66 @@ def _conformal_ci(calibrated_prob: float, coverage: float = 0.80) -> tuple[float
     return float(lo), float(hi), "heuristic"
 
 
-def predict(features: dict[str, float]) -> dict:
+def _apply_market_override(
+    model_prob: float,
+    metaculus_p: Optional[float],
+    polymarket_p: Optional[float],
+) -> tuple[float, bool]:
+    """
+    Post-model market override: blend calibrated model output with live market signals.
+
+    When Metaculus or Polymarket data is available for this specific question,
+    the market aggregates thousands of forecasters who have already processed
+    more context than the ICEWS-trained model sees. We trust it more.
+
+    Blend weights (log-odds space, geometric pooling):
+      60% model, 40% market  (when one market available)
+      50% model, 50% market  (when both markets available)
+
+    The model is still the anchor because markets may be for slightly different
+    questions, and thin markets can be manipulated.
+
+    Returns: (blended_prob, market_was_used)
+    """
+    valid: list[float] = []
+    if metaculus_p is not None and 0.01 < metaculus_p < 0.99:
+        valid.append(metaculus_p)
+    if polymarket_p is not None and 0.01 < polymarket_p < 0.99:
+        valid.append(polymarket_p)
+
+    if not valid:
+        return model_prob, False
+
+    # Geometric mean of market signals in log-odds space
+    market_lo = sum(math.log(p / (1 - p)) for p in valid) / len(valid)
+    market_prob = 1.0 / (1.0 + math.exp(-market_lo))
+
+    # Blend weights: model gets 60%, market gets 40% (one source) or 50% (two)
+    w_market = 0.5 if len(valid) >= 2 else 0.4
+    w_model = 1.0 - w_market
+
+    model_lo = math.log(model_prob / (1.0 - model_prob))
+    blended_lo = w_model * model_lo + w_market * market_lo
+    blended = 1.0 / (1.0 + math.exp(-blended_lo))
+
+    logger.info(
+        "Market override: model=%.3f market=%.3f (n=%d) → blended=%.3f",
+        model_prob, market_prob, len(valid), blended,
+    )
+    return float(blended), True
+
+
+def predict(
+    features: dict[str, float],
+    metaculus_p: Optional[float] = None,
+    polymarket_p: Optional[float] = None,
+) -> dict:
     """
     Returns prediction dict with: raw_prob, calibrated_prob, ci_lo, ci_hi, answer, untrained.
+
+    Market signals (metaculus_p, polymarket_p) are applied as a post-calibration
+    blend — they do NOT enter the feature vector, because ICEWS training data has
+    no real market observations. Passing them here triggers the override layer.
     """
     model, feature_names = load_model()
     calibrator = load_calibrator()
@@ -84,9 +141,7 @@ def predict(features: dict[str, float]) -> dict:
 
     if untrained:
         # No model: use market signals as prior, else 0.5
-        meta_p = features.get("metaculus_p", -1.0)
-        poly_p = features.get("polymarket_p", -1.0)
-        valid = [p for p in [meta_p, poly_p] if 0 < p < 1]
+        valid = [p for p in [metaculus_p, polymarket_p] if p is not None and 0 < p < 1]
         raw_prob = float(np.mean(valid)) if valid else 0.5
     else:
         raw_prob = float(model.predict_proba(x)[0, 1])
@@ -96,8 +151,16 @@ def predict(features: dict[str, float]) -> dict:
     else:
         calibrated_prob = raw_prob
 
-    # Clamp
+    # Clamp before market override so override math is in valid range
     calibrated_prob = max(0.01, min(0.99, calibrated_prob))
+
+    # ── Post-model market override ────────────────────────────────────────────
+    market_override_used = False
+    if not untrained:
+        calibrated_prob, market_override_used = _apply_market_override(
+            calibrated_prob, metaculus_p, polymarket_p
+        )
+        calibrated_prob = max(0.01, min(0.99, calibrated_prob))
 
     # Conformal CI (falls back to beta heuristic if scores unavailable)
     lo, hi, ci_method = _conformal_ci(calibrated_prob)
@@ -112,4 +175,5 @@ def predict(features: dict[str, float]) -> dict:
         "ci_method": ci_method,
         "answer": answer,
         "untrained": untrained,
+        "market_override": market_override_used,
     }
