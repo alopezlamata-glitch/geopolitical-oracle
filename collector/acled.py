@@ -12,7 +12,12 @@ from .base import RawEvent, new_event_id, graceful_collector, load_cached, save_
 
 logger = logging.getLogger(__name__)
 
-_BASE_URL = "https://api.acleddata.com/acled/read"
+_BASE_URLS = (
+    # Current documented endpoint
+    "https://acleddata.com/api/acled/read",
+    # Legacy endpoint kept as fallback for compatibility
+    "https://api.acleddata.com/acled/read",
+)
 _TIMEOUT = aiohttp.ClientTimeout(total=15)
 
 # Simple country wordlist for NER from question text
@@ -99,10 +104,11 @@ def _parse_event(row: dict) -> RawEvent:
 
 @graceful_collector("acled")
 async def collect_acled(session: aiohttp.ClientSession, query: str, country: Optional[str] = None) -> list[RawEvent]:
+    access_token = os.environ.get("ACLED_ACCESS_TOKEN", "")
     api_key = os.environ.get("ACLED_API_KEY", "")
     email = os.environ.get("ACLED_EMAIL", "")
-    if not api_key or not email:
-        logger.debug("acled: no credentials configured, skipping")
+    if not access_token and (not api_key or not email):
+        logger.debug("acled: no credentials configured (need ACLED_ACCESS_TOKEN or ACLED_API_KEY+ACLED_EMAIL), skipping")
         return []
 
     target_country = country or _extract_country(query)
@@ -120,21 +126,36 @@ async def collect_acled(session: aiohttp.ClientSession, query: str, country: Opt
     start = now - timedelta(days=30)
 
     params = {
-        "key": api_key,
-        "email": email,
         "country": target_country,
         "limit": "200",
         "event_date": f"{start.strftime('%Y-%m-%d')}|{now.strftime('%Y-%m-%d')}",
         "event_date_where": "BETWEEN",
         "fields": "event_date|event_type|sub_event_type|actor1|actor2|country|location|fatalities|notes|latitude|longitude|source_scale|disorder_type",
     }
+    headers: dict[str, str] = {}
+    if access_token:
+        headers["Authorization"] = f"Bearer {access_token}"
+    else:
+        # Legacy auth mode
+        params["key"] = api_key
+        params["email"] = email
 
-    async with session.get(_BASE_URL, params=params, timeout=_TIMEOUT) as resp:
-        if resp.status == 403:
-            logger.warning("acled: 403 (invalid credentials?)")
-            return []
-        resp.raise_for_status()
-        data = await resp.json()
+    data = None
+    for base_url in _BASE_URLS:
+        try:
+            async with session.get(base_url, params=params, headers=headers, timeout=_TIMEOUT) as resp:
+                if resp.status in (401, 403):
+                    logger.warning("acled: %s (invalid credentials/token?)", resp.status)
+                    return []
+                resp.raise_for_status()
+                data = await resp.json()
+                break
+        except aiohttp.ClientError as e:
+            logger.warning("acled: request failed for %s: %s", base_url, e)
+            continue
+
+    if data is None:
+        return []
 
     rows = data.get("data", [])
     if not isinstance(rows, list):
