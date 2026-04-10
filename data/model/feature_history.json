@@ -30,5 +30,37 @@
       "polymarket_p": -1.0,
       "market_available": 0.0
     }
+  },
+  {
+    "timestamp": "2026-04-10T03:20:10.716363+00:00",
+    "features": {
+      "military_count_7d": 33.0,
+      "military_count_30d": 33.0,
+      "protest_count_7d": 6.0,
+      "protest_count_30d": 6.0,
+      "diplomatic_count_7d": 0.0,
+      "ceasefire_count_7d": 19.0,
+      "sanction_count_7d": 1.0,
+      "political_crisis_count_7d": 0.0,
+      "military_intensity_7d": 5.61473628330526,
+      "protest_intensity_7d": 0.0,
+      "overall_intensity_7d": 11.40799914615764,
+      "military_accel": 1.1920529801324504,
+      "protest_accel": 0.9677419354838709,
+      "overall_accel": 2.3505976095617527,
+      "avg_polarity_7d": -0.2635920613693587,
+      "avg_polarity_30d": -0.2635920613693587,
+      "tone_trend": 0.29151910096667294,
+      "source_diversity_7d": 0.023809523809523808,
+      "avg_independent_sources": 1.0,
+      "avg_contradiction_score": 0.0,
+      "fatalities_7d": 0.0,
+      "has_military_7d": 1.0,
+      "has_ceasefire_7d": 1.0,
+      "escalation_index": -0.08526371669474031,
+      "metaculus_p": -1.0,
+      "polymarket_p": -1.0,
+      "market_available": 0.0
+    }
   }
 ]

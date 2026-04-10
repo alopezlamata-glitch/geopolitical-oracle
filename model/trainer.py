@@ -71,6 +71,13 @@ def train() -> bool:
     X_train, X_val = X[:split], X[split:]
     y_train, y_val = y_arr[:split], y_arr[split:]
 
+    # Compute scale_pos_weight to handle class imbalance
+    n_neg = int((y_train == 0).sum())
+    n_pos = int((y_train == 1).sum())
+    scale_pos_weight = n_neg / max(n_pos, 1)
+    logger.info("trainer: class balance — %d YES, %d NO, scale_pos_weight=%.2f",
+                n_pos, n_neg, scale_pos_weight)
+
     model = xgb.XGBClassifier(
         n_estimators=300,
         max_depth=4,
@@ -78,6 +85,7 @@ def train() -> bool:
         subsample=0.8,
         colsample_bytree=0.8,
         eval_metric="logloss",
+        scale_pos_weight=scale_pos_weight,
         random_state=42,
     )
     model.fit(
