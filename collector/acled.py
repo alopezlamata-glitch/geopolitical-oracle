@@ -12,7 +12,7 @@ from .base import RawEvent, new_event_id, graceful_collector, load_cached, save_
 
 logger = logging.getLogger(__name__)
 
-_BASE_URL = "https://api.acleddata.com/acled/read"
+_BASE_URL = "https://acleddata.com/api/acled/read"
 _TIMEOUT = aiohttp.ClientTimeout(total=15)
 
 # Simple country wordlist for NER from question text
@@ -100,8 +100,7 @@ def _parse_event(row: dict) -> RawEvent:
 @graceful_collector("acled")
 async def collect_acled(session: aiohttp.ClientSession, query: str, country: Optional[str] = None) -> list[RawEvent]:
     api_key = os.environ.get("ACLED_API_KEY", "")
-    email = os.environ.get("ACLED_EMAIL", "")
-    if not api_key or not email:
+    if not api_key:
         logger.debug("acled: no credentials configured, skipping")
         return []
 
@@ -117,19 +116,19 @@ async def collect_acled(session: aiohttp.ClientSession, query: str, country: Opt
         return cached
 
     now = datetime.now(timezone.utc)
-    start = now - timedelta(days=30)
+    # ACLED data lags ~13 months; use 420-day lookback to capture latest available data
+    start = now - timedelta(days=420)
 
     params = {
-        "key": api_key,
-        "email": email,
         "country": target_country,
         "limit": "200",
-        "event_date": f"{start.strftime('%Y-%m-%d')}|{now.strftime('%Y-%m-%d')}",
-        "event_date_where": "BETWEEN",
+        "event_date": start.strftime('%Y-%m-%d'),
+        "event_date_where": ">",
         "fields": "event_date|event_type|sub_event_type|actor1|actor2|country|location|fatalities|notes|latitude|longitude|source_scale|disorder_type",
     }
+    headers = {"Authorization": f"Bearer {api_key}", "User-Agent": "geopolitical-oracle/1.0"}
 
-    async with session.get(_BASE_URL, params=params, timeout=_TIMEOUT) as resp:
+    async with session.get(_BASE_URL, params=params, headers=headers, timeout=_TIMEOUT) as resp:
         if resp.status == 403:
             logger.warning("acled: 403 (invalid credentials?)")
             return []

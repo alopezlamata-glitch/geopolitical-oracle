@@ -130,7 +130,8 @@ def cmd_predict(args) -> None:
 
     # Format and print
     output = format_output(question, prediction, attribution, features, len(deduped), drift_flags)
-    print("\n" + output)
+    sys.stdout.buffer.write(("\n" + output + "\n").encode("utf-8", errors="replace"))
+    sys.stdout.buffer.flush()
 
     # Save prediction
     path = save_prediction(question, prediction, attribution, features, provenance, len(deduped))
