@@ -45,27 +45,46 @@ def _similarity(ev_a: CanonicalEvent, ev_b: CanonicalEvent) -> float:
         return 0.3 * type_match + 0.7 * title_sim
 
 
-def _merge(primary: CanonicalEvent, duplicate: CanonicalEvent) -> CanonicalEvent:
-    merged_doc_ids = list(set(primary.doc_ids + duplicate.doc_ids))
-    # Accumulate: merged event is observed by both sources
-    unique_sources = min(primary.independent_sources + duplicate.independent_sources, 5)
-    # Use the higher-severity event as base
-    base = primary if primary.severity >= duplicate.severity else duplicate
+def _merge(cluster: list[CanonicalEvent]) -> CanonicalEvent:
+    """Merge a cluster of duplicate events into one, tracking domain-level independence."""
+    primary = max(cluster, key=lambda e: e.severity)
+
+    merged_doc_ids = list({did for e in cluster for did in e.doc_ids})
+    merged_actors = list({a for e in cluster for a in e.actors})[:8]
+
+    # Domain-level independence: count unique root domains across the cluster.
+    # This is stricter than counting collector labels (gdelt/rss/acled) because
+    # GDELT and RSS aggregate from thousands of syndicated outlets that are NOT
+    # editorially independent. A BBC article re-published on 10 GDELT rows is
+    # still one independent observation.
+    all_domains: set[str] = set()
+    for e in cluster:
+        for d in e.source_domains:
+            if d:
+                all_domains.add(d)
+    # Cap at 5; fall back to collector-label count if no URL domains were present
+    n_independent = len(all_domains) if all_domains else len({e.source for e in cluster})
+    n_independent = min(n_independent, 5)
+
+    avg_polarity = sum(e.polarity for e in cluster) / len(cluster)
+    contradiction = max(abs(e.polarity - avg_polarity) for e in cluster)
+
     return CanonicalEvent(
-        event_id=base.event_id,
+        event_id=primary.event_id,
         doc_ids=merged_doc_ids,
-        source=base.source,
-        occurred_at=base.occurred_at,
-        event_type=base.event_type,
-        sub_event_type=base.sub_event_type,
-        actors=list(set(primary.actors + duplicate.actors))[:8],
-        country=base.country or primary.country or duplicate.country,
-        severity=max(primary.severity, duplicate.severity),
-        polarity=(primary.polarity + duplicate.polarity) / 2,
-        fatalities=max(primary.fatalities, duplicate.fatalities),
-        independent_sources=unique_sources,
-        contradiction_score=abs(primary.polarity - duplicate.polarity) / 2.0,
-        raw_title=base.raw_title,
+        source=primary.source,
+        occurred_at=primary.occurred_at,
+        event_type=primary.event_type,
+        sub_event_type=primary.sub_event_type,
+        actors=merged_actors,
+        country=next((e.country for e in cluster if e.country), ""),
+        severity=max(e.severity for e in cluster),
+        polarity=avg_polarity,
+        fatalities=max(e.fatalities for e in cluster),
+        independent_sources=n_independent,
+        contradiction_score=min(1.0, contradiction),
+        raw_title=primary.raw_title,
+        source_domains=list(all_domains),
     )
 
 
@@ -78,12 +97,11 @@ def deduplicate(events: list[CanonicalEvent], window_hours: int = 48) -> list[Ca
     if not events:
         return []
 
-    # Sort by occurred_at for stable processing
     events = sorted(events, key=lambda e: e.occurred_at)
     window = timedelta(hours=window_hours)
 
     merged: list[CanonicalEvent] = []
-    used = set()
+    used: set[int] = set()
 
     for i, ev_a in enumerate(events):
         if i in used:
@@ -100,12 +118,7 @@ def deduplicate(events: list[CanonicalEvent], window_hours: int = 48) -> list[Ca
                 cluster.append(ev_b)
                 used.add(j)
 
-        # Merge the cluster into one event
-        result = cluster[0]
-        for other in cluster[1:]:
-            result = _merge(result, other)
-        result.independent_sources = len({e.source for e in cluster})
-        merged.append(result)
+        merged.append(_merge(cluster))
         used.add(i)
 
     logger.info("deduplicator: %d raw → %d after dedup", len(events), len(merged))

@@ -16,34 +16,55 @@ from features.builder import get_feature_names
 logger = logging.getLogger(__name__)
 
 
+def _quantile_at(scores: list[float], coverage: float) -> float:
+    """Split-conformal quantile: ceil((n+1)*(1-alpha))-th order statistic."""
+    n = len(scores)
+    k = min(math.ceil((n + 1) * (1.0 - (1.0 - coverage))), n)
+    return sorted(scores)[k - 1]
+
+
 def _conformal_ci(calibrated_prob: float, coverage: float = 0.80) -> tuple[float, float, str]:
     """
-    Marginal conformal prediction interval.
-    Uses saved nonconformity scores from calibration validation set.
-    Falls back to beta heuristic if scores unavailable.
-    Returns (lo, hi, method_name).
+    Asymmetric split-conformal prediction interval. See CONFORMAL.md for guarantee.
+
+    Uses per-class nonconformity scores saved at calibration time:
+      scores_pos: s_i = 1 - p_cal for y=1 calibration examples
+      scores_neg: s_i = p_cal     for y=0 calibration examples
+
+    q_pos (upper margin) = quantile of scores_pos at (1-alpha) level
+    q_neg (lower margin) = quantile of scores_neg at (1-alpha) level
+
+    CI = [p - q_neg, p + q_pos]
+
+    Marginal coverage P(Y in C(X)) >= 1-alpha holds under exchangeability.
+    Falls back to symmetric conformal, then beta heuristic, when n < 5.
     """
     conformal_path = Path(__file__).parent.parent / "data" / "model" / "conformal_scores.json"
     if conformal_path.exists():
         try:
             data = json.loads(conformal_path.read_text())
-            scores = data["scores"]
-            n = len(scores)
-            if n >= 5:
-                # Conformal quantile: ceil((n+1)*(1-alpha))/n
-                alpha = 1.0 - coverage
-                q_level = math.ceil((n + 1) * (1 - alpha)) / n
-                q_level = min(q_level, 1.0)
-                sorted_scores = sorted(scores)
-                idx = min(int(q_level * n), n - 1)
-                margin = sorted_scores[idx]
-                lo = max(0.01, calibrated_prob - margin)
-                hi = min(0.99, calibrated_prob + margin)
+            scores_pos = data.get("scores_pos", [])
+            scores_neg = data.get("scores_neg", [])
+            p = calibrated_prob
+
+            if len(scores_pos) >= 5 and len(scores_neg) >= 5:
+                q_pos = _quantile_at(scores_pos, coverage)
+                q_neg = _quantile_at(scores_neg, coverage)
+                lo = max(0.01, p - q_neg)
+                hi = min(0.99, p + q_pos)
                 return lo, hi, "conformal"
+
+            all_scores = scores_pos + scores_neg
+            if len(all_scores) >= 5:
+                margin = _quantile_at(all_scores, coverage)
+                lo = max(0.01, p - margin)
+                hi = min(0.99, p + margin)
+                return lo, hi, "conformal-sym"
         except Exception:
             pass
-    # Fallback: beta heuristic with honest effective N
-    eff_n = 20  # conservative
+
+    # Final fallback: beta heuristic (honest about small-N uncertainty)
+    eff_n = 20
     alpha_p = calibrated_prob * eff_n
     beta_p = (1 - calibrated_prob) * eff_n
     lo, hi = scipy.stats.beta.interval(coverage, max(0.1, alpha_p), max(0.1, beta_p))

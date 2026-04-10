@@ -4,8 +4,27 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Optional
+from urllib.parse import urlparse
 
 from collector.base import RawEvent
+
+try:
+    import pycountry as _pycountry
+    _PYCOUNTRY_AVAILABLE = True
+except ImportError:
+    _PYCOUNTRY_AVAILABLE = False
+
+
+def _root_domain(url: str) -> str:
+    """Extract registrable domain from a URL (e.g. 'reuters.com' from 'https://www.reuters.com/...')."""
+    if not url:
+        return ""
+    try:
+        host = urlparse(url).netloc.lower().lstrip("www.")
+        parts = host.split(".")
+        return ".".join(parts[-2:]) if len(parts) >= 2 else host
+    except Exception:
+        return ""
 
 # ─── Taxonomy ────────────────────────────────────────────────────────────────
 
@@ -95,12 +114,13 @@ class CanonicalEvent:
     severity: float             # 0.0 to 1.0
     polarity: float             # -1.0 to +1.0
     fatalities: int
-    independent_sources: int    # how many sources reported this
+    independent_sources: int    # unique editorial domains that reported this event
     contradiction_score: float  # 0.0 consistent, 1.0 contradictory
     raw_title: str = ""
+    source_domains: list[str] = field(default_factory=list)  # root domains observed
 
     def to_dict(self) -> dict:
-        d = {
+        return {
             "event_id": self.event_id,
             "doc_ids": self.doc_ids,
             "source": self.source,
@@ -115,14 +135,15 @@ class CanonicalEvent:
             "independent_sources": self.independent_sources,
             "contradiction_score": self.contradiction_score,
             "raw_title": self.raw_title,
+            "source_domains": self.source_domains,
         }
-        return d
 
     @classmethod
     def from_dict(cls, d: dict) -> "CanonicalEvent":
         d = dict(d)
         if isinstance(d.get("occurred_at"), str):
             d["occurred_at"] = datetime.fromisoformat(d["occurred_at"])
+        d.setdefault("source_domains", [])
         return cls(**d)
 
 
@@ -176,9 +197,21 @@ _COUNTRY_MENTIONS: list[tuple[str, str]] = [
 
 
 def _extract_country_from_title(title: str) -> str:
-    """Best-effort country extraction from RSS title text."""
+    """Best-effort country extraction from RSS title text.
+    Tries pycountry first (full gazetteer), then falls back to alias list.
+    """
     t = title.lower()
-    # Multi-word first
+    if _PYCOUNTRY_AVAILABLE:
+        for country in _pycountry.countries:
+            name = country.name.lower()
+            # Skip very short names to avoid false positives (e.g. "Chad", "Man")
+            if len(name) >= 5 and name in t:
+                return country.name
+            if hasattr(country, "common_name"):
+                cn = country.common_name.lower()
+                if len(cn) >= 5 and cn in t:
+                    return country.common_name
+    # Alias list: covers demonyms, capitals, factions not in pycountry
     for alias, country in sorted(_COUNTRY_MENTIONS, key=lambda x: -len(x[0])):
         if alias in t:
             return country
@@ -274,6 +307,13 @@ def normalize(raw_event: RawEvent) -> CanonicalEvent:
         _extract_country_from_title(raw_event.title) if raw_event.source == "rss" else ""
     )
 
+    # Domain-level source tracking: use URL root domain as the editorial identity.
+    # This is more precise than the collector label (gdelt/rss/acled) because
+    # GDELT and RSS aggregate from thousands of distinct outlets.
+    domain = _root_domain(raw_event.url)
+    # Fallback: use the collector name as a coarse domain when URL is absent
+    source_domains = [domain] if domain else [raw_event.source]
+
     return CanonicalEvent(
         event_id=raw_event.event_id,
         doc_ids=[raw_event.event_id],
@@ -289,6 +329,7 @@ def normalize(raw_event: RawEvent) -> CanonicalEvent:
         independent_sources=1,
         contradiction_score=0.0,
         raw_title=raw_event.title,
+        source_domains=source_domains,
     )
 
 

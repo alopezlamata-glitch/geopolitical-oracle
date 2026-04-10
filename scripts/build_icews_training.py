@@ -4,23 +4,26 @@ ICEWS is a public dataset of 20M+ coded geopolitical events from 1995-present.
 Source: Harvard Dataverse doi:10.7910/DVN/28075 (free, no auth required)
 
 This script:
-  1. Downloads ICEWS 2021 + 2022 event files (~50MB total)
-  2. Parses events into our feature schema
-  3. Slides a 30-day window across each country/month
-  4. Labels each window: did a CAMEO "military attack" (code 19*) happen in the next 30 days?
-  5. Saves labeled examples to data/training/
+  1. Discovers all available ICEWS yearly files via Dataverse API (no hardcoded IDs)
+  2. Downloads files for target years (~25MB each)
+  3. Parses events into our feature schema
+  4. Slides a 30-day window across each country/month
+  5. Labels each window: cumulative military intensity >= 30.0 in next 30 days?
+  6. Saves balanced labeled examples to data/training/
 
-Run: python scripts/build_icews_training.py
-Expected output: ~500-2000 labeled training examples
+Run: python scripts/build_icews_training.py [--years 2018 2019 2020 2021 2022]
+Expected output: ~1000-3000 labeled training examples (more years → more data)
 """
 from __future__ import annotations
 
+import argparse
 import csv
 import io
 import json
 import logging
 import math
 import os
+import re
 import sys
 import time
 import urllib.request
@@ -36,13 +39,55 @@ logger = logging.getLogger("icews_builder")
 
 _TRAINING_DIR = Path(__file__).parent.parent / "data" / "training"
 _CACHE_DIR = Path(__file__).parent.parent / "data" / "raw" / "icews"
+_DATAVERSE_DOI = "doi:10.7910/DVN/28075"
 
-# ICEWS file IDs on Harvard Dataverse (2020, 2021, 2022)
-_ICEWS_FILES = [
+# Hardcoded fallback for known years (used if Dataverse API is unreachable)
+_ICEWS_FILES_FALLBACK = [
+    ("events.2018.tab.zip", 4459484),
+    ("events.2019.tab.zip", 4459460),
     ("events.2020.20210329.tab.zip", 6091024),
     ("events.2021.20220623.tab.zip", 6352620),
     ("events.2022.20230106.tab.zip", 6880739),
 ]
+_DEFAULT_YEARS = {2019, 2020, 2021, 2022}
+
+
+def _discover_icews_files(target_years: set[int]) -> list[tuple[str, int]]:
+    """
+    Query Harvard Dataverse API to discover ICEWS event zip files dynamically.
+    Filters to yearly event files (pattern: events.<year>*.tab.zip) for target_years.
+    Falls back to _ICEWS_FILES_FALLBACK if the API is unreachable.
+    """
+    url = (
+        "https://dataverse.harvard.edu/api/datasets/:persistentId/versions/:latest/files"
+        f"?persistentId={_DATAVERSE_DOI}"
+    )
+    try:
+        req = urllib.request.Request(
+            url, headers={"User-Agent": "geopolitical-oracle/1.0 (research)"}
+        )
+        with urllib.request.urlopen(req, timeout=30) as r:
+            data = json.loads(r.read())
+        files = []
+        for item in data.get("data", []):
+            label = item.get("label", "")
+            file_id = item.get("dataFile", {}).get("id")
+            # Match yearly event files: events.YYYY*.tab.zip
+            m = re.match(r"events\.(\d{4})\b.*\.tab\.zip$", label)
+            if m and file_id:
+                year = int(m.group(1))
+                if year in target_years:
+                    files.append((label, file_id))
+        if files:
+            logger.info("Dataverse API: found %d ICEWS files for years %s",
+                        len(files), sorted(target_years))
+            return sorted(files)
+        logger.warning("Dataverse API returned no matching files; using fallback list")
+    except Exception as e:
+        logger.warning("Dataverse API unreachable (%s); using fallback list", e)
+
+    return [(fn, fid) for fn, fid in _ICEWS_FILES_FALLBACK
+            if any(f".{y}" in fn or f".{y}." in fn for y in target_years)]
 
 # CAMEO event codes → our taxonomy
 # Full CAMEO codebook: https://parusanalytics.com/eventdata/cameo.dir/CAMEO.Manual.1.1b3.pdf
@@ -87,7 +132,6 @@ _WINDOW_DAYS = 30       # feature window
 _FORECAST_DAYS = 30     # outcome window: did escalation happen in next N days?
 _DECAY_HALF = 7.0       # days for time-decay weight
 _MIN_EVENTS = 5         # skip windows with too few events (not enough signal)
-_MAX_PER_COUNTRY_YEAR = 12   # cap samples per country/year to balance dataset
 
 
 def _download(file_id: int, filename: str) -> Path:
@@ -258,6 +302,11 @@ def _build_features(events: list[dict], window_end: datetime) -> dict[str, float
         "metaculus_p": -1.0,
         "polymarket_p": -1.0,
         "market_available": 0.0,
+        # ACLED structural features: 0.0 since ICEWS doesn't carry ACLED source_domains;
+        # model learns these are uninformative for ICEWS rows but live ACLED rows fill them.
+        "acled_military_90d": 0.0,
+        "acled_fatalities_90d": 0.0,
+        "acled_conflict_active": 0.0,
     }
 
 
@@ -283,11 +332,25 @@ def _build_question(country: str, window_end: datetime) -> str:
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Build ICEWS training data")
+    parser.add_argument(
+        "--years", type=int, nargs="+", default=sorted(_DEFAULT_YEARS),
+        help="ICEWS years to download (default: 2019 2020 2021 2022)",
+    )
+    args = parser.parse_args()
+    target_years = set(args.years)
+    logger.info("Target years: %s", sorted(target_years))
+
     _TRAINING_DIR.mkdir(parents=True, exist_ok=True)
     all_events_by_country: dict[str, list[dict]] = defaultdict(list)
 
+    icews_files = _discover_icews_files(target_years)
+    if not icews_files:
+        logger.error("No ICEWS files found for years %s", sorted(target_years))
+        return
+
     # Download and parse ICEWS files
-    for filename, file_id in _ICEWS_FILES:
+    for filename, file_id in icews_files:
         try:
             tab_path = _download(file_id, filename)
             events = _parse_tab(tab_path)
@@ -339,8 +402,6 @@ def main():
                 "source": "icews_historical",
             })
             count_this_country += 1
-            if count_this_country >= _MAX_PER_COUNTRY_YEAR * len(_ICEWS_FILES):
-                break
             current += timedelta(days=30)
 
     logger.info("generated %d labeled examples (before balancing)", len(examples))

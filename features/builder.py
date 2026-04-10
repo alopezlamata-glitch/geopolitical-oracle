@@ -23,6 +23,9 @@ _FEATURE_NAMES = [
     "fatalities_7d", "has_military_7d", "has_ceasefire_7d",
     "escalation_index",
     "metaculus_p", "polymarket_p", "market_available",
+    # ACLED structural features — computed relative to ACLED's own timeline,
+    # not current date, so they remain non-zero despite the ~13-month data lag.
+    "acled_military_90d", "acled_fatalities_90d", "acled_conflict_active",
 ]
 
 
@@ -33,6 +36,55 @@ def _decay_weight(event: CanonicalEvent, now: datetime) -> float:
 
 def _quality_weight(event: CanonicalEvent) -> float:
     return event.severity * math.sqrt(max(1, event.independent_sources)) * (1.0 - event.contradiction_score)
+
+
+def _build_acled_structural(
+    events: list[CanonicalEvent],
+    prov: dict[str, list[dict]],
+) -> dict[str, float]:
+    """
+    Compute ACLED-specific features relative to the latest ACLED event date.
+
+    ACLED data lags ~13 months behind real time. Using the current date as
+    the reference would place all ACLED events outside the 7d/30d windows,
+    contributing nothing. Instead, we anchor to ACLED's own most recent event
+    and compute a 90-day structural window from there.
+
+    This captures the conflict baseline at the last known point in ACLED's
+    dataset — valid as a structural prior, but explicitly NOT a live signal.
+    Features are prefixed acled_* to make the semantic clear.
+    """
+    acled = [e for e in events if e.source == "acled"]
+    feat: dict[str, float] = {
+        "acled_military_90d": 0.0,
+        "acled_fatalities_90d": 0.0,
+        "acled_conflict_active": 0.0,
+    }
+    if not acled:
+        return feat
+
+    # Anchor: most recent ACLED event date
+    latest = max(e.occurred_at for e in acled)
+    window_start = latest - timedelta(days=90)
+    recent_acled = [e for e in acled if e.occurred_at >= window_start]
+
+    mil_count = sum(1 for e in recent_acled if e.event_type == "military_action")
+    fatalities = sum(e.fatalities for e in recent_acled)
+
+    feat["acled_military_90d"] = float(mil_count)
+    feat["acled_fatalities_90d"] = float(fatalities)
+    feat["acled_conflict_active"] = 1.0 if mil_count >= 3 else 0.0
+
+    for ev in recent_acled:
+        if ev.event_type == "military_action":
+            prov["acled_military_90d"].append({"event_id": ev.event_id, "weight": 1.0})
+        prov["acled_fatalities_90d"].append(
+            {"event_id": ev.event_id, "weight": float(ev.fatalities) if ev.fatalities else 0.1}
+        )
+        if feat["acled_conflict_active"]:
+            prov["acled_conflict_active"].append({"event_id": ev.event_id, "weight": 1.0})
+
+    return feat
 
 
 def build_features(
@@ -51,7 +103,6 @@ def build_features(
     window_7d = now - timedelta(days=7)
     window_30d = now - timedelta(days=30)
     window_3d = now - timedelta(days=3)
-    cutoff_4d = now - timedelta(days=7)   # prior 4d = [7d ago, 3d ago]
 
     events_7d = [e for e in events if e.occurred_at >= window_7d]
     events_30d = [e for e in events if e.occurred_at >= window_30d]
@@ -126,7 +177,6 @@ def build_features(
     all_prior4 = len(events_prior4d)
     feat["overall_accel"] = all_last3 / (all_prior4 + 0.1)
 
-    # Provenance for acceleration — filtered by event type
     for ev in events_last3d + events_prior4d:
         w = _decay_weight(ev, now)
         if ev.event_type == "military_action":
@@ -166,11 +216,17 @@ def build_features(
     for ev in events_last3d + events_prior4d:
         _add_prov("tone_trend", ev.event_id, _decay_weight(ev, now))
 
-    # ── Source diversity ────────────────────────────────────────────────────
+    # ── Source diversity (domain-level) ─────────────────────────────────────
+    # Use root domains tracked in source_domains, not coarse collector labels.
+    # This avoids counting 10 GDELT rows from reuters.com as 10 independent
+    # observations — they are one.
 
     if events_7d:
-        unique_sources = len({e.source for e in events_7d})
-        feat["source_diversity_7d"] = min(1.0, unique_sources / max(len(events_7d), 1))
+        all_domains_7d: set[str] = set()
+        for e in events_7d:
+            all_domains_7d.update(d for d in e.source_domains if d)
+        n_domains = len(all_domains_7d) if all_domains_7d else len({e.source for e in events_7d})
+        feat["source_diversity_7d"] = min(1.0, n_domains / max(len(events_7d), 1))
         feat["avg_independent_sources"] = sum(e.independent_sources for e in events_7d) / len(events_7d)
         feat["avg_contradiction_score"] = sum(e.contradiction_score for e in events_7d) / len(events_7d)
         for ev in events_7d:
@@ -200,13 +256,17 @@ def build_features(
         w = _decay_weight(ev, now) * _quality_weight(ev)
         _add_prov("escalation_index", ev.event_id, w)
 
+    # ── ACLED structural features (source-relative timeline) ─────────────────
+
+    acled_feat = _build_acled_structural(events, prov)
+    feat.update(acled_feat)
+
     # ── Market signals ──────────────────────────────────────────────────────
 
     feat["metaculus_p"] = metaculus_p if metaculus_p is not None else -1.0
     feat["polymarket_p"] = polymarket_p if polymarket_p is not None else -1.0
     feat["market_available"] = float(metaculus_p is not None or polymarket_p is not None)
 
-    # Markets have no event provenance
     prov["metaculus_p"] = []
     prov["polymarket_p"] = []
     prov["market_available"] = []
