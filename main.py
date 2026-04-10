@@ -41,6 +41,91 @@ logger = logging.getLogger("oracle")
 for _log in ("aiohttp", "urllib3", "feedparser", "shap"):
     logging.getLogger(_log).setLevel(logging.WARNING)
 
+async def _collector_healthcheck(question: str, country: str | None) -> dict:
+    """Run each collector and return a structured health report."""
+    from collector import collect_gdelt, collect_rss, collect_metaculus, collect_polymarket, collect_acled
+
+    report: dict[str, dict] = {}
+    async with aiohttp.ClientSession() as session:
+        collectors = {
+            "gdelt": collect_gdelt(session, question),
+            "rss": collect_rss(session, question),
+            "metaculus": collect_metaculus(session, question),
+            "polymarket": collect_polymarket(session, question),
+            "acled": collect_acled(session, question, country=country),
+        }
+        names = list(collectors.keys())
+        results = await asyncio.gather(*collectors.values(), return_exceptions=True)
+
+    for name, result in zip(names, results):
+        if isinstance(result, Exception):
+            report[name] = {"ok": False, "error": str(result)}
+            continue
+
+        if name in ("gdelt", "rss", "acled"):
+            count = len(result or [])
+            report[name] = {"ok": True, "events": count}
+        elif name == "metaculus":
+            p, n = result if isinstance(result, tuple) else (None, 0)
+            report[name] = {"ok": True, "probability": p, "forecasters": n}
+        elif name == "polymarket":
+            p, vol = result if isinstance(result, tuple) else (None, 0.0)
+            report[name] = {"ok": True, "probability": p, "volume": vol}
+
+    return report
+
+
+def cmd_doctor(args) -> None:
+    """Run a quick diagnostic over connectivity, credentials and collector outputs."""
+    cases = [
+        ("Will there be armed clashes in Sudan before July 1, 2026?", "Sudan"),
+        ("Will Russia launch a major offensive in Ukraine before July 1, 2026?", "Ukraine"),
+        ("Will Iran conduct a missile test before July 1, 2026?", "Iran"),
+    ]
+
+    if args.question:
+        cases = [(args.question, args.country)]
+
+    print("\n=== Geopolitical Oracle doctor ===")
+    has_token = bool(os.environ.get("ACLED_ACCESS_TOKEN"))
+    has_legacy = bool(os.environ.get("ACLED_API_KEY") and os.environ.get("ACLED_EMAIL"))
+    if has_token or has_legacy:
+        mode = "bearer token" if has_token else "legacy key+email"
+        print(f"ACLED credentials: OK ({mode})")
+    else:
+        print("ACLED credentials: MISSING (set ACLED_ACCESS_TOKEN or ACLED_API_KEY+ACLED_EMAIL)")
+
+    for idx, (question, country) in enumerate(cases, start=1):
+        print(f"\n[{idx}/{len(cases)}] {question}")
+        report = asyncio.run(_collector_healthcheck(question, country))
+
+        total_events = 0
+        for name in ("gdelt", "rss", "acled"):
+            item = report.get(name, {})
+            if not item.get("ok"):
+                print(f"  - {name:10}: ERROR -> {item.get('error', 'unknown error')}")
+                continue
+            events = item.get("events", 0)
+            total_events += events
+            print(f"  - {name:10}: {events:4d} events")
+
+        meta = report.get("metaculus", {})
+        if meta.get("ok"):
+            print(f"  - metaculus : p={meta.get('probability')} (forecasters={meta.get('forecasters', 0)})")
+        else:
+            print(f"  - metaculus : ERROR -> {meta.get('error', 'unknown error')}")
+
+        poly = report.get("polymarket", {})
+        if poly.get("ok"):
+            print(f"  - polymarket: p={poly.get('probability')} (volume={poly.get('volume', 0.0)})")
+        else:
+            print(f"  - polymarket: ERROR -> {poly.get('error', 'unknown error')}")
+
+        if total_events == 0:
+            print("  => Status: INSUFFICIENT EVIDENCE (no raw events from GDELT/RSS/ACLED)")
+        else:
+            print(f"  => Status: OK ({total_events} raw events available)")
+
 
 async def _collect_all(question: str, country: str | None) -> tuple[list, float | None, float | None]:
     """Run all collectors concurrently. Returns (raw_events, metaculus_p, polymarket_p)."""
@@ -102,7 +187,7 @@ def cmd_predict(args) -> None:
 
     if not deduped:
         print("\nINSUFFICIENT EVIDENCE — no events found for this question.")
-        print("Try a different phrasing or add ACLED credentials in .env")
+        print("Try a different phrasing, verify collector network access, and configure ACLED credentials/token in .env")
         return
 
     # Build features
@@ -248,6 +333,11 @@ def main():
 
     p_drift = sub.add_parser("drift", help="Show drift report")
     p_drift.set_defaults(func=cmd_drift)
+
+    p_doctor = sub.add_parser("doctor", help="Run connectivity and collector diagnostics")
+    p_doctor.add_argument("--question", default=None, help="Optional single diagnostic question")
+    p_doctor.add_argument("--country", default=None, help="Country for ACLED when --question is provided")
+    p_doctor.set_defaults(func=cmd_doctor)
 
     args = parser.parse_args()
     args.func(args)
