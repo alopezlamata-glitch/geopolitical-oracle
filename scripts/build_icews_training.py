@@ -220,7 +220,7 @@ def _decay(delta_days: float) -> float:
     return math.exp(-delta_days / _DECAY_HALF)
 
 
-def _build_features(events: list[dict], window_end: datetime) -> dict[str, float]:
+def _build_features(events: list[dict], window_end: datetime, country: str = "") -> dict[str, float]:
     """Build feature vector from events in [window_end - 30d, window_end]."""
     w30 = window_end - timedelta(days=30)
     w7  = window_end - timedelta(days=7)
@@ -276,6 +276,9 @@ def _build_features(events: list[dict], window_end: datetime) -> dict[str, float
     sources = {e.get("source_country", "?") for e in evs7}
     src_div = min(1.0, len(sources) / max(len(evs7), 1))
 
+    from features.country_data import get_country_features
+    struct = get_country_features(country)
+
     return {
         "military_count_7d": float(mil7),
         "military_count_30d": float(mil30),
@@ -297,18 +300,18 @@ def _build_features(events: list[dict], window_end: datetime) -> dict[str, float
         "source_diversity_7d": src_div,
         "avg_independent_sources": min(3.0, len(sources) / max(len(evs7), 1) * 3),
         "avg_contradiction_score": 0.1,
-        "fatalities_7d": 0.0,   # ICEWS doesn't include fatalities
+        "fatalities_7d": 0.0,   # ICEWS doesn't record fatalities
         "has_military_7d": float(mil7 > 0),
         "has_ceasefire_7d": float(cease7 > 0),
         "escalation_index": mil_int7 - cease7 * 0.3,
-        "metaculus_p": -1.0,
-        "polymarket_p": -1.0,
+        # Market signals: not available in historical training data
+        "metaculus_p": 0.5,     # neutral prior (no market available)
+        "metaculus_available": 0.0,
+        "polymarket_p": 0.5,
+        "polymarket_available": 0.0,
         "market_available": 0.0,
-        # ACLED structural features: 0.0 since ICEWS doesn't carry ACLED source_domains;
-        # model learns these are uninformative for ICEWS rows but live ACLED rows fill them.
-        "acled_military_90d": 0.0,
-        "acled_fatalities_90d": 0.0,
-        "acled_conflict_active": 0.0,
+        # Structural country features from country_data.py (real signal, not zero)
+        **struct,
     }
 
 
@@ -388,7 +391,7 @@ def main():
                 current += timedelta(days=30)
                 continue
 
-            features = _build_features(window_events, current)
+            features = _build_features(window_events, current, country=country)
             outcome = _is_escalation(
                 events,
                 window_start=current,

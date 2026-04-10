@@ -7,11 +7,34 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from normalizer.canonical import CanonicalEvent
+from features.country_data import get_country_features
 
 logger = logging.getLogger(__name__)
 
 _DECAY_HALFLIFE_DAYS = 7.0
+
+# ── Feature registry ──────────────────────────────────────────────────────────
+# Changes from v1 (30 features) → v2 (32 features):
+#
+#   REMOVED (3): acled_military_90d, acled_fatalities_90d, acled_conflict_active
+#     Reason: always 0.0 in training data (ICEWS source has no ACLED events);
+#     model never learned the relationship → dead weight at inference too.
+#     Re-add when historical ACLED data is integrated into training.
+#
+#   CHANGED (3): metaculus_p, polymarket_p, market_available
+#     sentinel changed from -1.0 → 0.0 when unavailable.
+#     Two new binary availability flags added (metaculus_available, polymarket_available)
+#     so the model knows to ignore the p value when it's a default 0.5.
+#
+#   ADDED (3): country_conflict_baserate, country_polity_norm, country_mil_spending_norm
+#     Static structural prior per country (see features/country_data.py).
+#     These anchor the prediction before reading any news:
+#       conflict_baserate — fraction of years with active conflict (UCDP 2000-2023)
+#       polity_norm       — Polity5 score normalized to [-1, +1]
+#       mil_spending_norm — military % of GDP / 10  (SIPRI 2022)
+
 _FEATURE_NAMES = [
+    # ── Event-derived features (24) ──────────────────────────────────────────
     "military_count_7d", "military_count_30d",
     "protest_count_7d", "protest_count_30d",
     "diplomatic_count_7d", "ceasefire_count_7d",
@@ -22,10 +45,16 @@ _FEATURE_NAMES = [
     "source_diversity_7d", "avg_independent_sources", "avg_contradiction_score",
     "fatalities_7d", "has_military_7d", "has_ceasefire_7d",
     "escalation_index",
-    "metaculus_p", "polymarket_p", "market_available",
-    # ACLED structural features — computed relative to ACLED's own timeline,
-    # not current date, so they remain non-zero despite the ~13-month data lag.
-    "acled_military_90d", "acled_fatalities_90d", "acled_conflict_active",
+    # ── Market signals (5) ────────────────────────────────────────────────────
+    # metaculus_p / polymarket_p: 0.5 when unavailable (neutral prior), not -1
+    # *_available: 1.0 when the market has real data, 0.0 otherwise
+    "metaculus_p", "metaculus_available",
+    "polymarket_p", "polymarket_available",
+    "market_available",
+    # ── Structural country features (3) ───────────────────────────────────────
+    "country_conflict_baserate",   # UCDP: fraction of years 2000-2023 with conflict
+    "country_polity_norm",         # Polity5 / 10: -1 (autocracy) to +1 (democracy)
+    "country_mil_spending_norm",   # SIPRI mil%GDP / 10: 0 to 1
 ]
 
 
@@ -38,64 +67,23 @@ def _quality_weight(event: CanonicalEvent) -> float:
     return event.severity * math.sqrt(max(1, event.independent_sources)) * (1.0 - event.contradiction_score)
 
 
-def _build_acled_structural(
-    events: list[CanonicalEvent],
-    prov: dict[str, list[dict]],
-) -> dict[str, float]:
-    """
-    Compute ACLED-specific features relative to the latest ACLED event date.
-
-    ACLED data lags ~13 months behind real time. Using the current date as
-    the reference would place all ACLED events outside the 7d/30d windows,
-    contributing nothing. Instead, we anchor to ACLED's own most recent event
-    and compute a 90-day structural window from there.
-
-    This captures the conflict baseline at the last known point in ACLED's
-    dataset — valid as a structural prior, but explicitly NOT a live signal.
-    Features are prefixed acled_* to make the semantic clear.
-    """
-    acled = [e for e in events if e.source == "acled"]
-    feat: dict[str, float] = {
-        "acled_military_90d": 0.0,
-        "acled_fatalities_90d": 0.0,
-        "acled_conflict_active": 0.0,
-    }
-    if not acled:
-        return feat
-
-    # Anchor: most recent ACLED event date
-    latest = max(e.occurred_at for e in acled)
-    window_start = latest - timedelta(days=90)
-    recent_acled = [e for e in acled if e.occurred_at >= window_start]
-
-    mil_count = sum(1 for e in recent_acled if e.event_type == "military_action")
-    fatalities = sum(e.fatalities for e in recent_acled)
-
-    feat["acled_military_90d"] = float(mil_count)
-    feat["acled_fatalities_90d"] = float(fatalities)
-    feat["acled_conflict_active"] = 1.0 if mil_count >= 3 else 0.0
-
-    for ev in recent_acled:
-        if ev.event_type == "military_action":
-            prov["acled_military_90d"].append({"event_id": ev.event_id, "weight": 1.0})
-        prov["acled_fatalities_90d"].append(
-            {"event_id": ev.event_id, "weight": float(ev.fatalities) if ev.fatalities else 0.1}
-        )
-        if feat["acled_conflict_active"]:
-            prov["acled_conflict_active"].append({"event_id": ev.event_id, "weight": 1.0})
-
-    return feat
-
-
 def build_features(
     events: list[CanonicalEvent],
     metaculus_p: Optional[float] = None,
     polymarket_p: Optional[float] = None,
+    country: Optional[str] = None,
     now: Optional[datetime] = None,
 ) -> tuple[dict[str, float], dict[str, list[dict]]]:
     """
     Returns (feature_vector, provenance).
     provenance[feature_name] = [{"event_id": str, "weight": float}, ...]
+
+    Args:
+        events      : normalized, deduplicated events for the question
+        metaculus_p : Metaculus community probability (None if unavailable)
+        polymarket_p: Polymarket YES price (None if unavailable)
+        country     : country name for structural features lookup
+        now         : reference time (defaults to UTC now)
     """
     if now is None:
         now = datetime.now(timezone.utc)
@@ -145,7 +133,7 @@ def build_features(
             feat["protest_count_30d"] += 1
             _add_prov("protest_count_30d", ev.event_id, 1.0)
 
-    # ── Intensity (weighted) ────────────────────────────────────────────────
+    # ── Intensity (decay-weighted) ───────────────────────────────────────────
 
     for ev in events_7d:
         w = _decay_weight(ev, now) * _quality_weight(ev)
@@ -160,7 +148,7 @@ def build_features(
         feat["overall_intensity_7d"] += w
         _add_prov("overall_intensity_7d", ev.event_id, w)
 
-    # ── Acceleration ────────────────────────────────────────────────────────
+    # ── Acceleration (last 3d vs prior 4d) ───────────────────────────────────
 
     def _count_type(evlist: list[CanonicalEvent], etype: str) -> int:
         return sum(1 for e in evlist if e.event_type == etype)
@@ -185,7 +173,7 @@ def build_features(
             _add_prov("protest_accel", ev.event_id, w)
         _add_prov("overall_accel", ev.event_id, w)
 
-    # ── Polarity ────────────────────────────────────────────────────────────
+    # ── Polarity / tone ──────────────────────────────────────────────────────
 
     def _weighted_polarity(evlist: list[CanonicalEvent]) -> tuple[float, list]:
         total_w = 0.0
@@ -217,9 +205,7 @@ def build_features(
         _add_prov("tone_trend", ev.event_id, _decay_weight(ev, now))
 
     # ── Source diversity (domain-level) ─────────────────────────────────────
-    # Use root domains tracked in source_domains, not coarse collector labels.
-    # This avoids counting 10 GDELT rows from reuters.com as 10 independent
-    # observations — they are one.
+    # Count unique root domains, not coarse collector labels.
 
     if events_7d:
         all_domains_7d: set[str] = set()
@@ -234,7 +220,7 @@ def build_features(
             _add_prov("avg_independent_sources", ev.event_id, 1.0)
             _add_prov("avg_contradiction_score", ev.event_id, 1.0)
 
-    # ── Escalation signals ──────────────────────────────────────────────────
+    # ── Escalation signals ───────────────────────────────────────────────────
 
     for ev in events_7d:
         feat["fatalities_7d"] += ev.fatalities
@@ -256,20 +242,36 @@ def build_features(
         w = _decay_weight(ev, now) * _quality_weight(ev)
         _add_prov("escalation_index", ev.event_id, w)
 
-    # ── ACLED structural features (source-relative timeline) ─────────────────
+    # ── Market signals ───────────────────────────────────────────────────────
+    # Sentinel is 0.5 (neutral prior) when unavailable, NOT -1.
+    # Separate *_available flags tell the model whether to trust the p value.
 
-    acled_feat = _build_acled_structural(events, prov)
-    feat.update(acled_feat)
+    meta_avail = metaculus_p is not None and 0.0 < metaculus_p < 1.0
+    poly_avail = polymarket_p is not None and 0.0 < polymarket_p < 1.0
 
-    # ── Market signals ──────────────────────────────────────────────────────
-
-    feat["metaculus_p"] = metaculus_p if metaculus_p is not None else -1.0
-    feat["polymarket_p"] = polymarket_p if polymarket_p is not None else -1.0
-    feat["market_available"] = float(metaculus_p is not None or polymarket_p is not None)
+    feat["metaculus_p"] = float(metaculus_p) if meta_avail else 0.5
+    feat["metaculus_available"] = 1.0 if meta_avail else 0.0
+    feat["polymarket_p"] = float(polymarket_p) if poly_avail else 0.5
+    feat["polymarket_available"] = 1.0 if poly_avail else 0.0
+    feat["market_available"] = float(meta_avail or poly_avail)
 
     prov["metaculus_p"] = []
     prov["polymarket_p"] = []
     prov["market_available"] = []
+    prov["metaculus_available"] = []
+    prov["polymarket_available"] = []
+
+    # ── Structural country features (no events, static lookup) ───────────────
+    # These are the same regardless of the query window.
+    # country is passed from main.py; falls back to world medians if unknown.
+
+    struct = get_country_features(country or "")
+    feat.update(struct)
+
+    # Provenance: no events feed these (they're static), but record the country
+    prov["country_conflict_baserate"] = []
+    prov["country_polity_norm"] = []
+    prov["country_mil_spending_norm"] = []
 
     return dict(feat), dict(prov)
 

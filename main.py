@@ -105,11 +105,12 @@ def cmd_predict(args) -> None:
         print("Try a different phrasing or add ACLED credentials in .env")
         return
 
-    # Build features
+    # Build features (country used for structural prior lookup)
     features, provenance = build_features(
         deduped,
         metaculus_p=metaculus_p,
         polymarket_p=polymarket_p,
+        country=country,
     )
 
     # Save features
