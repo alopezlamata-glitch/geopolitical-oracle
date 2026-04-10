@@ -71,10 +71,14 @@ def train() -> bool:
     X_train, X_val = X[:split], X[split:]
     y_train, y_val = y_arr[:split], y_arr[split:]
 
-    # Compute scale_pos_weight to handle class imbalance
+    # Compute scale_pos_weight to handle class imbalance.
+    # scale_pos_weight upweights the positive (minority) class gradient.
+    # Only meaningful when positives are the minority (n_pos < n_neg).
+    # If positives are the majority, scale_pos_weight < 1 would incorrectly
+    # DOWN-weight them, biasing predictions toward 0. Clamp to >= 1.0.
     n_neg = int((y_train == 0).sum())
     n_pos = int((y_train == 1).sum())
-    scale_pos_weight = n_neg / max(n_pos, 1)
+    scale_pos_weight = max(1.0, n_neg / max(n_pos, 1))
     logger.info("trainer: class balance — %d YES, %d NO, scale_pos_weight=%.2f",
                 n_pos, n_neg, scale_pos_weight)
 
