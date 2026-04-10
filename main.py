@@ -74,6 +74,59 @@ async def _collect_all(question: str, country: str | None) -> tuple[list, float 
     return all_events, metaculus_p, polymarket_p
 
 
+def _print_parse_summary(pq, ood) -> None:
+    """Print a compact parse + OOD summary before prediction."""
+    import sys
+    # Use UTF-8 for output on all platforms
+    out = sys.stdout.buffer if hasattr(sys.stdout, 'buffer') else sys.stdout
+
+    def p(line: str) -> None:
+        out.write((line + "\n").encode("utf-8", errors="replace"))
+        out.flush()
+
+    status = "[IN DOMAIN]" if ood.in_domain else "[OUT OF DOMAIN]"
+    conf_pct = int(pq.parse_confidence * 100)
+    conf_bar = "#" * int(pq.parse_confidence * 10) + "." * (10 - int(pq.parse_confidence * 10))
+
+    p("")
+    p("+-- Question parse " + "-" * 42 + "+")
+    p(f"|  Subject      : {pq.subject} ({pq.subject_type})")
+    p(f"|  Predicate    : {pq.predicate}")
+    p(f"|  Event family : {pq.event_family}")
+    p(f"|  Deadline     : {pq.deadline or '(none detected)'}")
+    p(f"|  Jurisdiction : {pq.jurisdiction or '(none)'}")
+    p(f"|  Negated      : {'yes' if pq.is_negated else 'no'}")
+    p(f"|  Parse conf   : [{conf_bar}] {conf_pct}%")
+    p(f"|  Model status : {status}")
+    if ood.in_domain:
+        p(f"|  Model        : {ood.matched_model}")
+    rule_short = pq.resolution_rule[:65] + ("..." if len(pq.resolution_rule) > 65 else "")
+    p(f"|  Resolution   : {rule_short}")
+    p("+" + "-" * 60 + "+")
+
+
+def cmd_parse(args) -> None:
+    """Detailed parse + OOD analysis without running the full pipeline."""
+    from question.parser import parse_question
+    from question.ood import assess_ood
+
+    pq = parse_question(args.question)
+    ood = assess_ood(pq)
+
+    _print_parse_summary(pq, ood)
+
+    if ood.domain_gap:
+        print("\nDomain gaps:")
+        for gap in ood.domain_gap:
+            print(f"  • {gap}")
+
+    if not ood.in_domain:
+        print(f"\nSuggested path to build a model for this domain:")
+        print(f"  {ood.suggested_action}")
+    else:
+        print(f"\nAll checks passed. Run with 'predict' to get a probability.")
+
+
 def cmd_predict(args) -> None:
     from normalizer.canonical import normalize_all
     from normalizer.deduplicator import deduplicate
@@ -83,9 +136,31 @@ def cmd_predict(args) -> None:
     from predictor.attribution import compute_shap_attribution
     from predictor.output import format_output, save_prediction
     from monitor.drift import detect_drift
+    from question.parser import parse_question
+    from question.ood import assess_ood
 
     question = args.question
     country = getattr(args, "country", None)
+
+    # ── Step 1: Parse and OOD check ──────────────────────────────────────────
+    pq = parse_question(question)
+    ood = assess_ood(pq)
+
+    # Always show what was parsed so the user can catch misparses
+    _print_parse_summary(pq, ood)
+
+    if not ood.in_domain:
+        import sys
+        out = sys.stdout.buffer
+        def _pb(line):
+            out.write((line + "\n").encode("utf-8", errors="replace")); out.flush()
+        _pb("\n" + "-" * 60)
+        _pb("OUT OF DOMAIN -- prediction not issued.")
+        _pb(f"\nReason: {ood.reason}")
+        _pb(f"\nTo build a model for this domain:")
+        _pb(f"  {ood.suggested_action}")
+        _pb("-" * 60)
+        return
 
     print(f"\nGathering evidence for: {question!r}")
     print("Collecting from GDELT, RSS, Metaculus, Polymarket, ACLED...")
@@ -239,6 +314,10 @@ def cmd_drift(args) -> None:
 def main():
     parser = argparse.ArgumentParser(description="Geopolitical Oracle")
     sub = parser.add_subparsers(dest="command", required=True)
+
+    p_parse = sub.add_parser("parse", help="Parse question and check OOD — no prediction")
+    p_parse.add_argument("--question", "-q", required=True, help="Binary question to analyse")
+    p_parse.set_defaults(func=cmd_parse)
 
     p_predict = sub.add_parser("predict", help="Run full prediction pipeline")
     p_predict.add_argument("--question", "-q", required=True, help="Binary question to answer")
