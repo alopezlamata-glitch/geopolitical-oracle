@@ -41,15 +41,16 @@ _TRAINING_DIR = Path(__file__).parent.parent / "data" / "training"
 _CACHE_DIR = Path(__file__).parent.parent / "data" / "raw" / "icews"
 _DATAVERSE_DOI = "doi:10.7910/DVN/28075"
 
-# Hardcoded fallback for known years (used if Dataverse API is unreachable)
+# Hardcoded fallback for known years (used if Dataverse API is unreachable).
+# Only zip files listed — uncompressed .tab files (2014-2019) are 190-300MB each.
 _ICEWS_FILES_FALLBACK = [
-    ("events.2018.tab.zip", 4459484),
-    ("events.2019.tab.zip", 4459460),
-    ("events.2020.20210329.tab.zip", 6091024),
+    ("events.2012.20150313084811.tab.zip", 2546878),
+    ("events.2013.20150313084929.tab.zip", 2546879),
+    ("events.2020.20220623.tab.zip", 6352621),
     ("events.2021.20220623.tab.zip", 6352620),
     ("events.2022.20230106.tab.zip", 6880739),
 ]
-_DEFAULT_YEARS = {2019, 2020, 2021, 2022}
+_DEFAULT_YEARS = {2012, 2013, 2020, 2021, 2022}
 
 
 def _discover_icews_files(target_years: set[int]) -> list[tuple[str, int]]:
@@ -72,9 +73,10 @@ def _discover_icews_files(target_years: set[int]) -> list[tuple[str, int]]:
         for item in data.get("data", []):
             label = item.get("label", "")
             file_id = item.get("dataFile", {}).get("id")
-            # Match yearly event files: events.YYYY*.tab.zip
+            size = item.get("dataFile", {}).get("filesize", 0)
+            # Match yearly event files: events.YYYY*.tab.zip (skip uncompressed .tab, >100MB)
             m = re.match(r"events\.(\d{4})\b.*\.tab\.zip$", label)
-            if m and file_id:
+            if m and file_id and size < 100_000_000:
                 year = int(m.group(1))
                 if year in target_years:
                     files.append((label, file_id))
@@ -87,7 +89,7 @@ def _discover_icews_files(target_years: set[int]) -> list[tuple[str, int]]:
         logger.warning("Dataverse API unreachable (%s); using fallback list", e)
 
     return [(fn, fid) for fn, fid in _ICEWS_FILES_FALLBACK
-            if any(f".{y}" in fn or f".{y}." in fn for y in target_years)]
+            if any(re.search(rf"events\.{y}\b", fn) for y in target_years)]
 
 # CAMEO event codes → our taxonomy
 # Full CAMEO codebook: https://parusanalytics.com/eventdata/cameo.dir/CAMEO.Manual.1.1b3.pdf
@@ -432,7 +434,7 @@ def main():
 
     total = len(examples)
     yes_pct = outcomes[1] / total if total else 0
-    print(f"\n✓ Saved {saved} new training examples to {_TRAINING_DIR}")
+    print(f"\nSaved {saved} new training examples to {_TRAINING_DIR}")
     print(f"  YES (escalation): {outcomes[1]} ({yes_pct:.0%})")
     print(f"  NO  (stable):     {outcomes[0]} ({1-yes_pct:.0%})")
     print(f"  Countries: {len(all_events_by_country)}")
