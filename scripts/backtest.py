@@ -41,7 +41,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger("backtest")
 
-_TRAINING_DIR = Path(__file__).parent.parent / "data" / "training"
 _OUTPUT_PATH = Path(__file__).parent.parent / "data" / "model" / "backtest_results.json"
 _MIN_TRAIN = 100
 _CALIB_FRAC = 0.20   # fraction of training fold used for Platt calibration
@@ -50,24 +49,40 @@ _CALIB_FRAC = 0.20   # fraction of training fold used for Platt calibration
 # ─── Data loading ─────────────────────────────────────────────────────────────
 
 def _load_examples() -> list[dict]:
+    from data_layer.db import get_db
     examples = []
     from features.builder import get_feature_names
     feat_names = get_feature_names()
-    for f in sorted(_TRAINING_DIR.glob("*.json")):
+
+    db = get_db(read_only=True)
+    rows = db.execute(
+        """
+        SELECT
+            snapshot_id,
+            CAST(as_of_time AS VARCHAR) AS as_of_time,
+            explicit_features,
+            outcome
+        FROM training_ready_snapshots
+        WHERE outcome IS NOT NULL
+        ORDER BY as_of_time ASC, snapshot_id ASC
+        """
+    ).fetchall()
+    for snapshot_id, as_of_time, explicit_features, outcome in rows:
         try:
-            d = json.loads(f.read_text())
-            if "outcome" not in d or "features" not in d or "timestamp" not in d:
-                continue
-            feats = [float(d["features"].get(fn, 0.0)) for fn in feat_names]
+            feats_obj = explicit_features
+            if isinstance(feats_obj, str):
+                feats_obj = json.loads(feats_obj)
+            feats = [float(feats_obj.get(fn, 0.0)) for fn in feat_names]
             examples.append({
-                "ts": d["timestamp"][:10],
-                "outcome": int(d["outcome"]),
+                "ts": str(as_of_time)[:10],
+                "outcome": int(outcome),
                 "features": np.array(feats, dtype=np.float32),
-                "source": d.get("source", "unknown"),
+                "source": "training_ready_snapshots",
+                "snapshot_id": str(snapshot_id),
             })
         except Exception:
             continue
-    examples.sort(key=lambda e: e["ts"])
+    examples.sort(key=lambda e: (e["ts"], e.get("snapshot_id", "")))
     return examples
 
 
@@ -331,6 +346,12 @@ def _cross_era_folds(examples: list[dict]) -> list[tuple[str, list[dict], list[d
 def _run_folds(folds: list[tuple[str, list, list]]) -> list[dict]:
     results = []
     for label, train_ex, test_ex in folds:
+        max_train_ts = max(e["ts"] for e in train_ex)
+        min_test_ts = min(e["ts"] for e in test_ex)
+        assert max_train_ts < min_test_ts, (
+            f"Temporal leakage in fold '{label}': "
+            f"max train ts {max_train_ts} >= min test ts {min_test_ts}"
+        )
         # Split training into fit + calibration
         n_cal = max(10, int(len(train_ex) * _CALIB_FRAC))
         fit_ex = train_ex[:-n_cal]
@@ -363,6 +384,11 @@ def _run_folds(folds: list[tuple[str, list, list]]) -> list[dict]:
             "n_test": len(test_ex),
             "base_rate": round(base_rate, 3),
             "brier": round(_brier(y_test, p_test), 4),
+            "log_loss": round(
+                float(np.mean(-(y_test * np.log(np.clip(p_test, 1e-12, 1 - 1e-12))
+                                + (1 - y_test) * np.log(np.clip(1 - p_test, 1e-12, 1 - 1e-12))))),
+                4,
+            ),
             "brier_skill": _brier_skill(y_test, p_test),
             "roc_auc": _roc_auc(y_test, p_test),
             "ece": _ece(y_test, p_test),
