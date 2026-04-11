@@ -16,7 +16,8 @@ Metrics per fold and aggregate:
   Conformal CI coverage (asymmetric, from held-out nonconformity scores)
   Reliability diagram (ASCII)
 
-Output: data/model/backtest_results.json
+Output (primary): data/model/eval_baseline_v1.json
+Legacy mirror:    data/model/backtest_results.json
 
 Run: python scripts/backtest.py
 """
@@ -41,8 +42,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger("backtest")
 
-_TRAINING_DIR = Path(__file__).parent.parent / "data" / "training"
-_OUTPUT_PATH = Path(__file__).parent.parent / "data" / "model" / "backtest_results.json"
+_OUTPUT_PATH = Path(__file__).parent.parent / "data" / "model" / "eval_baseline_v1.json"
+_LEGACY_OUTPUT_PATH = Path(__file__).parent.parent / "data" / "model" / "backtest_results.json"
 _MIN_TRAIN = 100
 _CALIB_FRAC = 0.20   # fraction of training fold used for Platt calibration
 
@@ -50,20 +51,38 @@ _CALIB_FRAC = 0.20   # fraction of training fold used for Platt calibration
 # ─── Data loading ─────────────────────────────────────────────────────────────
 
 def _load_examples() -> list[dict]:
+    """Primary evaluation dataset loader: DuckDB lakehouse snapshots."""
     examples = []
     from features.builder import get_feature_names
+    from data_layer.db import get_db, init_schema
+
+    init_schema()
+    db = get_db()
     feat_names = get_feature_names()
-    for f in sorted(_TRAINING_DIR.glob("*.json")):
+    rows = db.execute(
+        """
+        SELECT
+            as_of_time,
+            outcome,
+            explicit_features
+        FROM training_ready_snapshots
+        ORDER BY as_of_time ASC
+        """
+    ).fetchall()
+
+    for as_of_time, outcome, explicit_features in rows:
         try:
-            d = json.loads(f.read_text())
-            if "outcome" not in d or "features" not in d or "timestamp" not in d:
+            feats_dict = explicit_features
+            if isinstance(explicit_features, str):
+                feats_dict = json.loads(explicit_features)
+            if not isinstance(feats_dict, dict):
                 continue
-            feats = [float(d["features"].get(fn, 0.0)) for fn in feat_names]
+            feats = [float(feats_dict.get(fn, 0.0)) for fn in feat_names]
             examples.append({
-                "ts": d["timestamp"][:10],
-                "outcome": int(d["outcome"]),
+                "ts": str(as_of_time)[:10],
+                "outcome": int(outcome),
                 "features": np.array(feats, dtype=np.float32),
-                "source": d.get("source", "unknown"),
+                "source": "lakehouse",
             })
         except Exception:
             continue
@@ -474,6 +493,9 @@ def _print_reliability(rows: list[dict], title: str = "Reliability diagram") -> 
 def main() -> None:
     logger.info("Loading training examples...")
     examples = _load_examples()
+    if not examples:
+        logger.error("No lakehouse training snapshots available for evaluation.")
+        return
     logger.info("Loaded %d examples (%s – %s)",
                 len(examples), examples[0]["ts"], examples[-1]["ts"])
 
@@ -506,7 +528,9 @@ def main() -> None:
     }
     _OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     _OUTPUT_PATH.write_text(json.dumps(output, indent=2, ensure_ascii=True))
-    logger.info("Results saved to %s", _OUTPUT_PATH)
+    # Legacy mirror for existing tooling; primary official output is eval_baseline_v1.json
+    _LEGACY_OUTPUT_PATH.write_text(json.dumps(output, indent=2, ensure_ascii=True))
+    logger.info("Results saved to %s (legacy mirror: %s)", _OUTPUT_PATH, _LEGACY_OUTPUT_PATH)
 
     # Print summary
     print("\n" + "=" * 60)
