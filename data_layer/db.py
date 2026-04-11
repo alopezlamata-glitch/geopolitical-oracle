@@ -87,6 +87,9 @@ def init_schema(force: bool = False) -> None:
         logger.error("Schema initialization failed: %s", e)
         raise
 
+    # Incremental column migrations (safe to run on existing DBs)
+    _migrate_predictions_blend_columns(db)
+
 
 def _drop_all(db) -> None:
     """Drop all lakehouse tables in reverse dependency order. DESTRUCTIVE."""
@@ -105,6 +108,36 @@ def _drop_all(db) -> None:
     ]
     for v in views:
         db.execute(f"DROP VIEW IF EXISTS {v}")
+
+
+def _migrate_predictions_blend_columns(db) -> None:
+    """
+    Add market-blend audit columns to the predictions table if they don't exist.
+
+    Safe to call on any existing database — uses ADD COLUMN IF NOT EXISTS.
+    This is the Phase B migration: allows the blend calibrator to query
+    p_model_raw and p_market_raw for all past predictions.
+    """
+    blend_columns = [
+        ("p_model_raw",             "FLOAT"),
+        ("p_market_raw",            "FLOAT"),
+        ("market_weight",           "FLOAT"),
+        ("market_sources",          "VARCHAR[]"),
+        ("market_match_score",      "FLOAT"),
+        ("blend_strategy",          "VARCHAR"),
+        ("blend_strategy_version",  "VARCHAR"),
+        ("n_market_signals",        "SMALLINT"),
+        ("market_gate_passed",      "BOOLEAN"),
+        ("market_gate_reason",      "VARCHAR"),
+    ]
+    for col_name, col_type in blend_columns:
+        try:
+            db.execute(
+                f"ALTER TABLE predictions ADD COLUMN IF NOT EXISTS {col_name} {col_type}"
+            )
+        except Exception as e:
+            # Table may not exist yet (first init) — silently skip; schema.sql creates it
+            logger.debug("blend column migration skip (%s %s): %s", col_name, col_type, e)
 
 
 def close_db() -> None:

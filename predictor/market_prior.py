@@ -24,6 +24,7 @@ import logging
 import math
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -293,13 +294,16 @@ def blend_market_prior(
     When the gate fails → BlendResult.p_final == p_model, market_weight = 0.0.
     When the gate passes → log-odds weighted blend of p_model and p_market.
 
-    The blend is in log-odds space (not linear) because it handles extreme
-    probabilities correctly and is equivalent to Bayesian evidence combination
-    when signals are treated as independent (they aren't, but it's a good proxy).
+    Phase A (logodds_v1):
+        logit(p_final) = (1 - w) * logit(p_model) + w * logit(p_market)
+        w = dynamic weight from compute_market_weight(), capped at W_MARKET_CAP.
 
-      logit(p_final) = (1 - w) * logit(p_model) + w * logit(p_market)
+    Phase B (logodds_learned_v1), active when blend_weights.json exists:
+        logit(p_final) = alpha * logit(p_model) + beta * w_scale * logit(p_market) + bias
+        where alpha/beta/bias are fitted from resolved history, and
+        w_scale = (w_market / W_MARKET_CAP) scales beta by market quality.
 
-    p_market = geometric mean of all valid signals in log-odds space.
+    The quality gate still applies in both phases: gate fail → model_only.
     """
     p_model = _clip(p_model)
     weight, gate_reason = compute_market_weight(signals, as_of_time)
@@ -317,35 +321,107 @@ def blend_market_prior(
         best_match = max(s.match_score for s in signals)
 
     if not gate_passed or p_market is None:
-        blend_strategy = "model_only"
-        p_final = p_model
-        weight = 0.0
-    else:
-        # Log-odds blend
-        lo_final = (1.0 - weight) * _logit(p_model) + weight * _logit(p_market)
-        p_final = _clip(_sigmoid(lo_final))
-
-        if weight >= 0.40:
-            blend_strategy = "market_dominant"
-        else:
-            blend_strategy = "model_plus_market"
-
-        logger.info(
-            "market blend: p_model=%.3f p_market=%.3f w=%.2f → p_final=%.3f  "
-            "strategy=%s sources=%s",
-            p_model, p_market, weight, p_final, blend_strategy, market_sources,
+        return BlendResult(
+            p_final=round(p_model, 4),
+            p_model=round(p_model, 4),
+            p_market=None,
+            market_weight=0.0,
+            market_sources=[],
+            best_match_score=None,
+            blend_strategy="model_only",
+            blend_strategy_version=BLEND_STRATEGY_VERSION,
+            gate_passed=gate_passed,
+            gate_reason=gate_reason,
+            n_signals=len(signals),
         )
+
+    # ── Try Phase B: learned weights ──────────────────────────────────────────
+    learned = _load_blend_weights_cached()
+    if learned is not None:
+        alpha = learned["alpha"]
+        beta  = learned["beta"]
+        bias  = learned["bias"]
+        # Scale beta by normalised market quality (w_market / cap)
+        w_scale = weight / W_MARKET_CAP
+        lo_final = alpha * _logit(p_model) + beta * w_scale * _logit(p_market) + bias
+        strategy_version = learned.get("blend_calibrator_version", "logodds_learned_v1")
+        logger.info(
+            "market blend [learned]: p_model=%.3f p_market=%.3f "
+            "alpha=%.3f beta=%.3f w_scale=%.2f bias=%.3f → lo=%.3f",
+            p_model, p_market, alpha, beta, w_scale, bias, lo_final,
+        )
+    else:
+        # ── Phase A: fixed dynamic weight ────────────────────────────────────
+        lo_final = (1.0 - weight) * _logit(p_model) + weight * _logit(p_market)
+        strategy_version = BLEND_STRATEGY_VERSION
+        logger.info(
+            "market blend [fixed]: p_model=%.3f p_market=%.3f w=%.2f → lo=%.3f",
+            p_model, p_market, weight, lo_final,
+        )
+
+    p_final = _clip(_sigmoid(lo_final))
+
+    if weight >= 0.40:
+        blend_strategy = "market_dominant"
+    else:
+        blend_strategy = "model_plus_market"
+
+    logger.info(
+        "market blend result: p_final=%.3f  strategy=%s  sources=%s",
+        p_final, blend_strategy, market_sources,
+    )
 
     return BlendResult(
         p_final=round(p_final, 4),
         p_model=round(p_model, 4),
-        p_market=round(p_market, 4) if p_market is not None else None,
+        p_market=round(p_market, 4),
         market_weight=round(weight, 4),
         market_sources=market_sources,
         best_match_score=round(best_match, 4) if best_match is not None else None,
         blend_strategy=blend_strategy,
-        blend_strategy_version=BLEND_STRATEGY_VERSION,
+        blend_strategy_version=strategy_version,
         gate_passed=gate_passed,
         gate_reason=gate_reason,
         n_signals=len(signals),
     )
+
+
+# ── Blend weight cache (avoid disk read on every predict call) ────────────────
+
+_blend_weights_cache: Optional[dict] = None
+_blend_weights_mtime: float = 0.0
+
+_BLEND_WEIGHTS_FILE = Path(__file__).parent.parent / "data" / "model" / "blend_weights.json"
+
+
+def _load_blend_weights_cached() -> Optional[dict]:
+    """
+    Load blend_weights.json with a simple mtime cache.
+
+    Re-reads the file if it was modified since last load.
+    Returns None if the file doesn't exist (triggers Phase A fallback).
+    """
+    global _blend_weights_cache, _blend_weights_mtime
+
+    _BLEND_WEIGHTS_PATH = _BLEND_WEIGHTS_FILE
+    if not _BLEND_WEIGHTS_PATH.exists():
+        return None
+
+    try:
+        mtime = _BLEND_WEIGHTS_PATH.stat().st_mtime
+        if _blend_weights_cache is not None and mtime == _blend_weights_mtime:
+            return _blend_weights_cache
+
+        from predictor.blend_calibrator import load_blend_weights
+        data = load_blend_weights()
+        _blend_weights_cache = data
+        _blend_weights_mtime = mtime
+        if data:
+            logger.debug(
+                "blend weights loaded: alpha=%.4f beta=%.4f bias=%.4f",
+                data["alpha"], data["beta"], data["bias"],
+            )
+        return data
+    except Exception as e:
+        logger.debug("blend weights cache miss: %s", e)
+        return None

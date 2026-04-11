@@ -379,6 +379,21 @@ def cmd_drift(args) -> None:
             print(f"  {f['feature']:35}  z={z_str}  [{f['status']}]")
 
 
+def cmd_blend_calibrate(args) -> None:
+    """
+    Phase B: learn blend coefficients from resolved prediction history.
+
+    Queries DuckDB for all predictions with known outcomes, compares
+    model_only vs fixed_blend vs learned_blend Brier scores, and saves
+    alpha/beta/bias to data/model/blend_weights.json if enough data exists.
+    """
+    from predictor.blend_calibrator import run_blend_calibration, MIN_RESOLVED_WITH_MARKET
+    from data_layer.db import init_schema
+
+    init_schema()  # ensure tables exist (and blend columns migrated)
+    run_blend_calibration(verbose=True)
+
+
 def cmd_db(args) -> None:
     """Show lakehouse statistics and recent predictions."""
     from data_layer.db import init_schema, schema_stats, get_db_path
@@ -466,6 +481,12 @@ def main():
 
     p_db = sub.add_parser("db", help="Show lakehouse database stats and recent predictions")
     p_db.set_defaults(func=cmd_db)
+
+    p_blend = sub.add_parser(
+        "blend-calibrate",
+        help="Phase B: learn market blend weights from resolved history",
+    )
+    p_blend.set_defaults(func=cmd_blend_calibrate)
 
     args = parser.parse_args()
     args.func(args)

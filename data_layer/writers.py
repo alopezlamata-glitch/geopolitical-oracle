@@ -317,7 +317,14 @@ def write_prediction(
     flip_set_size: Optional[int] = None,
     as_of_time: Optional[datetime] = None,
 ) -> Optional[str]:
-    """Write a prediction record. Returns prediction_id."""
+    """
+    Write a prediction record including full market-blend audit trail.
+    Returns prediction_id.
+
+    The blend audit columns (p_model_raw, p_market_raw, etc.) are written when
+    present in the prediction dict. They are used by blend_calibrator.py for
+    Phase B learning.
+    """
     from data_layer.db import get_db, table_exists
     import uuid
 
@@ -329,6 +336,9 @@ def write_prediction(
     if as_of_time is None:
         as_of_time = predicted_at
 
+    # Market sources is a list — store as VARCHAR[] compatible with DuckDB
+    market_sources = prediction.get("market_sources", []) or []
+
     try:
         db = get_db()
         db.execute(
@@ -338,9 +348,22 @@ def write_prediction(
                 raw_prob, calibrated_prob, ci_lo, ci_hi, ci_method, answer,
                 model_id, model_version, schema_version,
                 market_override, market_prob_used,
+                p_model_raw, p_market_raw, market_weight, market_sources,
+                market_match_score, blend_strategy, blend_strategy_version,
+                n_market_signals, market_gate_passed, market_gate_reason,
                 top_features, flip_set_size,
                 predicted_at, as_of_time
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (
+                ?, ?, ?,
+                ?, ?, ?, ?, ?, ?,
+                ?, ?, ?,
+                ?, ?,
+                ?, ?, ?, ?,
+                ?, ?, ?,
+                ?, ?, ?,
+                ?, ?,
+                ?, ?
+            )
             """,
             [
                 prediction_id, question_id, snapshot_id,
@@ -349,7 +372,18 @@ def write_prediction(
                 prediction.get("ci_method"), prediction.get("answer"),
                 model_id, model_version, schema_version,
                 prediction.get("market_override", False),
-                prediction.get("market_prob_used"),
+                prediction.get("p_market_raw"),   # alias for legacy market_prob_used
+                # Blend audit trail
+                prediction.get("p_model_raw"),
+                prediction.get("p_market_raw"),
+                prediction.get("market_weight", 0.0),
+                market_sources,
+                prediction.get("market_match_score"),
+                prediction.get("blend_strategy", "model_only"),
+                prediction.get("blend_strategy_version", "logodds_v1"),
+                prediction.get("n_market_signals", 0),
+                prediction.get("market_gate_passed", False),
+                prediction.get("market_gate_reason"),
                 json.dumps(top_features) if top_features else None,
                 flip_set_size,
                 predicted_at, as_of_time,
