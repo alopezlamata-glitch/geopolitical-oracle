@@ -228,13 +228,20 @@ def cmd_predict(args) -> None:
         print("Try a different phrasing or add ACLED credentials in .env")
         return
 
-    # ── Step 4: Build features ────────────────────────────────────────────────
+    # ── Step 4: Build features (+ LLM enrichment if Ollama available) ────────
     features, provenance = build_features(
         deduped,
         metaculus_p=metaculus_p,
         polymarket_p=polymarket_p,
         country=country,
+        question=question,
+        use_llm=True,
     )
+    if features.get("llm_available", 0.0) > 0:
+        print(f"  LLM features    : threat={features['llm_threat_level']:.2f}  "
+              f"esc={features['llm_escalation']:.2f}  "
+              f"deesc={features['llm_deescalation']:.2f}  "
+              f"host={features['llm_actor_hostility']:.2f}")
     event_ids = [e.event_id for e in deduped]
     # Legacy artifact for local debugging/export; not used by train/label/eval primary flows
     save_features(question, features, provenance, event_ids)

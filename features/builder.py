@@ -11,6 +11,18 @@ from features.country_data import get_country_features
 
 logger = logging.getLogger(__name__)
 
+# ── LLM feature names (v4 additions) ─────────────────────────────────────────
+# These are NOT in _FEATURE_NAMES (v3 model never sees them).
+# Stored in feature_snapshots for future v4 model training.
+_LLM_FEATURE_NAMES = [
+    "llm_threat_level",
+    "llm_escalation",
+    "llm_deescalation",
+    "llm_event_certainty",
+    "llm_actor_hostility",
+    "llm_available",
+]
+
 _DECAY_HALFLIFE_DAYS = 7.0
 
 # ── Feature registry ──────────────────────────────────────────────────────────
@@ -71,6 +83,8 @@ def build_features(
     polymarket_p: Optional[float] = None,  # passed through for caller use; NOT in feature vector
     country: Optional[str] = None,
     now: Optional[datetime] = None,
+    question: Optional[str] = None,        # used for LLM feature extraction (non-fatal)
+    use_llm: bool = True,                  # set False to skip LLM even if Ollama available
 ) -> tuple[dict[str, float], dict[str, list[dict]]]:
     """
     Returns (feature_vector, provenance).
@@ -82,9 +96,14 @@ def build_features(
         polymarket_p: passed through for market override — NOT added to feature vector
         country     : country name for structural features lookup
         now         : reference time (defaults to UTC now)
+        question    : original question text (used for LLM feature extraction)
+        use_llm     : if True, attempt Ollama text feature extraction (non-fatal)
 
     Market signals are applied as a post-model override in predictor/inference.py,
     not as XGBoost input features, because 0% of ICEWS training examples have market data.
+
+    LLM features (llm_*): added to the returned dict but NOT in _FEATURE_NAMES.
+    The v3 XGBoost model ignores them. They are stored in feature_snapshots for v4.
     """
     if now is None:
         now = datetime.now(timezone.utc)
@@ -263,8 +282,44 @@ def build_features(
     prov["country_polity_norm"] = []
     prov["country_mil_spending_norm"] = []
 
+    # ── LLM feature extraction (v4, non-fatal) ────────────────────────────────
+    # These 6 features are NOT in _FEATURE_NAMES so the v3 XGBoost ignores them.
+    # They are stored alongside v3 features in feature_snapshots for v4 training.
+
+    llm_feats: dict[str, float] = {k: 0.0 for k in _LLM_FEATURE_NAMES}
+
+    if use_llm and question and events:
+        try:
+            from llm.text_features import extract_llm_features
+            headlines = [
+                ev.raw_title
+                for ev in sorted(events, key=lambda e: e.occurred_at, reverse=True)
+                if ev.raw_title.strip()
+            ]
+            if headlines:
+                llm_result = extract_llm_features(question=question, headlines=headlines)
+                llm_feats.update(llm_result.to_feature_dict())
+                if llm_result.available:
+                    logger.info(
+                        "llm features: threat=%.2f esc=%.2f deesc=%.2f "
+                        "cert=%.2f host=%.2f (%.0fms)",
+                        llm_result.threat_level, llm_result.escalation,
+                        llm_result.deescalation, llm_result.event_certainty,
+                        llm_result.actor_hostility, llm_result.latency_ms or 0,
+                    )
+        except Exception as e:
+            logger.debug("llm feature extraction skipped: %s", e)
+
+    feat.update(llm_feats)
+
     return dict(feat), dict(prov)
 
 
 def get_feature_names() -> list[str]:
+    """Return v3 feature names (used by the trained XGBoost model)."""
     return list(_FEATURE_NAMES)
+
+
+def get_feature_names_v4() -> list[str]:
+    """Return all feature names including LLM features (for future v4 training)."""
+    return list(_FEATURE_NAMES) + list(_LLM_FEATURE_NAMES)
