@@ -29,6 +29,7 @@ import sys
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Callable, Optional
 
 import numpy as np
 
@@ -43,8 +44,11 @@ logger = logging.getLogger("backtest")
 
 _TRAINING_DIR = Path(__file__).parent.parent / "data" / "training"
 _OUTPUT_PATH = Path(__file__).parent.parent / "data" / "model" / "backtest_results.json"
+_BASELINE_V1_PATH = Path(__file__).parent.parent / "data" / "model" / "eval_baseline_v1.json"
 _MIN_TRAIN = 100
 _CALIB_FRAC = 0.20   # fraction of training fold used for Platt calibration
+_MIN_MARKET_ELIGIBLE = 25
+_MIN_MARKET_COVERAGE_FRAC = 0.05
 
 
 # ─── Data loading ─────────────────────────────────────────────────────────────
@@ -64,6 +68,8 @@ def _load_examples() -> list[dict]:
                 "outcome": int(d["outcome"]),
                 "features": np.array(feats, dtype=np.float32),
                 "source": d.get("source", "unknown"),
+                "metaculus_p": d.get("metaculus_p", d.get("features", {}).get("metaculus_p")),
+                "polymarket_p": d.get("polymarket_p", d.get("features", {}).get("polymarket_p")),
             })
         except Exception:
             continue
@@ -222,6 +228,27 @@ def _ece(y: np.ndarray, p: np.ndarray, n_bins: int = 10) -> float:
     return round(float(ece), 4)
 
 
+def _market_prob_from_signals(
+    metaculus_p: Optional[float],
+    polymarket_p: Optional[float],
+) -> tuple[Optional[float], bool]:
+    valid: list[float] = []
+    for p in (metaculus_p, polymarket_p):
+        if p is None:
+            continue
+        try:
+            p_f = float(p)
+        except (TypeError, ValueError):
+            continue
+        if 0.01 < p_f < 0.99:
+            valid.append(p_f)
+    if not valid:
+        return None, False
+    market_lo = sum(math.log(p / (1 - p)) for p in valid) / len(valid)
+    market_prob = 1.0 / (1.0 + math.exp(-market_lo))
+    return float(market_prob), True
+
+
 def _ece_by_range(y: np.ndarray, p: np.ndarray) -> dict[str, float | None]:
     """
     ECE broken down by probability range to expose calibration heterogeneity.
@@ -351,6 +378,14 @@ def _run_folds(folds: list[tuple[str, list, list]]) -> list[dict]:
 
         _, p_cal = _predict_fold(model, calibrator, cal_method, X_cal)
         _, p_test = _predict_fold(model, calibrator, cal_method, X_test)
+        market_probs: list[Optional[float]] = []
+        market_eligible_mask: list[bool] = []
+        for ex in test_ex:
+            m_prob, eligible = _market_prob_from_signals(
+                ex.get("metaculus_p"), ex.get("polymarket_p")
+            )
+            market_probs.append(m_prob)
+            market_eligible_mask.append(eligible)
 
         base_rate = float(y_test.mean())
         conf = _conformal_coverage(y_cal, p_cal, y_test, p_test)
@@ -369,6 +404,10 @@ def _run_folds(folds: list[tuple[str, list, list]]) -> list[dict]:
             "ece_by_range": _ece_by_range(y_test, p_test),
             "conformal_coverage_80": conf,
             "reliability": _reliability_diagram(y_test, p_test),
+            "y_test": y_test.tolist(),
+            "model_probs": [float(x) for x in p_test.tolist()],
+            "market_probs": market_probs,
+            "market_eligible_mask": market_eligible_mask,
         }
         results.append(result)
         logger.info(
@@ -448,6 +487,191 @@ def _aggregate(fold_results: list[dict]) -> dict:
     }
 
 
+def _compute_fold_metrics(y_true: np.ndarray, probs: np.ndarray) -> dict:
+    if len(y_true) == 0:
+        return {
+            "n_test": 0,
+            "base_rate": None,
+            "brier": None,
+            "brier_skill": None,
+            "roc_auc": None,
+            "ece": None,
+        }
+    return {
+        "n_test": int(len(y_true)),
+        "base_rate": round(float(y_true.mean()), 3),
+        "brier": round(_brier(y_true, probs), 4),
+        "brier_skill": _brier_skill(y_true, probs),
+        "roc_auc": _roc_auc(y_true, probs),
+        "ece": _ece(y_true, probs),
+    }
+
+
+def _build_variant_summary(
+    name: str,
+    fold_results: list[dict],
+    predictor: Callable[[float, Optional[float], bool], tuple[Optional[float], bool]],
+) -> dict:
+    fold_rows: list[dict] = []
+    total_examples = sum(int(f.get("n_test", 0)) for f in fold_results)
+    eligible_examples = 0
+
+    for fold in fold_results:
+        y_arr = np.array(fold.get("y_test", []), dtype=np.int32)
+        model_arr = np.array(fold.get("model_probs", []), dtype=np.float64)
+        market_arr = fold.get("market_probs", [])
+        elig_arr = fold.get("market_eligible_mask", [])
+
+        preds: list[float] = []
+        y_sel: list[int] = []
+        for y_i, model_p, market_p, eligible in zip(y_arr, model_arr, market_arr, elig_arr):
+            pred, used = predictor(float(model_p), market_p, bool(eligible))
+            if pred is None:
+                continue
+            if name == "model_only" or used:
+                preds.append(float(pred))
+                y_sel.append(int(y_i))
+
+        eligible_examples += len(y_sel)
+        metrics = _compute_fold_metrics(np.array(y_sel, dtype=np.int32), np.array(preds, dtype=np.float64))
+        fold_rows.append({
+            "fold": fold.get("fold"),
+            "n_total": int(fold.get("n_test", 0)),
+            "n_eligible": len(y_sel),
+            "coverage": round(len(y_sel) / max(int(fold.get("n_test", 0)), 1), 4),
+            **metrics,
+        })
+
+    coverage_frac = eligible_examples / total_examples if total_examples > 0 else 0.0
+    agg_input = []
+    for row in fold_rows:
+        if row["n_test"] == 0:
+            continue
+        agg_input.append({
+            "n_test": row["n_test"],
+            "brier": row["brier"],
+            "brier_skill": row["brier_skill"],
+            "roc_auc": row["roc_auc"],
+            "ece": row["ece"],
+            "ece_by_range": {},
+            "conformal_coverage_80": {"coverage": None},
+            "reliability": [],
+        })
+    aggregate = _aggregate(agg_input)
+    return {
+        "variant": name,
+        "coverage": {
+            "eligible": int(eligible_examples),
+            "total": int(total_examples),
+            "fraction": round(float(coverage_frac), 4),
+        },
+        "aggregate": aggregate,
+        "folds": fold_rows,
+    }
+
+
+def _build_eval_baseline_v1(within_results: list[dict], cross_results: list[dict]) -> dict:
+    from predictor.inference import _apply_market_override
+
+    def _model_only(model_p: float, _market_p: Optional[float], _eligible: bool) -> tuple[Optional[float], bool]:
+        return model_p, True
+
+    def _market_only(
+        _model_p: float, market_p: Optional[float], eligible: bool
+    ) -> tuple[Optional[float], bool]:
+        return (market_p, True) if eligible and market_p is not None else (None, False)
+
+    def _blended(
+        model_p: float, market_p: Optional[float], eligible: bool
+    ) -> tuple[Optional[float], bool]:
+        if not eligible or market_p is None:
+            return None, False
+        blended, used = _apply_market_override(model_p, market_p, None)
+        return (blended, used) if used else (None, False)
+
+    executors: dict[str, Callable[[float, Optional[float], bool], tuple[Optional[float], bool]]] = {
+        "model_only": _model_only,
+        "market_only": _market_only,
+        "blended": _blended,
+    }
+
+    variants: dict[str, dict] = {}
+    skipped: dict[str, dict] = {}
+    for variant_name, executor in executors.items():
+        within_summary = _build_variant_summary(variant_name, within_results, executor)
+        cross_summary = _build_variant_summary(variant_name, cross_results, executor)
+        total_eligible = (
+            within_summary["coverage"]["eligible"] + cross_summary["coverage"]["eligible"]
+        )
+        total_count = (
+            within_summary["coverage"]["total"] + cross_summary["coverage"]["total"]
+        )
+        coverage_frac = total_eligible / total_count if total_count else 0.0
+
+        if variant_name in {"market_only", "blended"}:
+            if total_eligible < _MIN_MARKET_ELIGIBLE or coverage_frac < _MIN_MARKET_COVERAGE_FRAC:
+                skipped[variant_name] = {
+                    "reason": "insufficient_market_coverage",
+                    "thresholds": {
+                        "min_eligible_examples": _MIN_MARKET_ELIGIBLE,
+                        "min_coverage_fraction": _MIN_MARKET_COVERAGE_FRAC,
+                    },
+                    "observed_coverage": {
+                        "eligible": int(total_eligible),
+                        "total": int(total_count),
+                        "fraction": round(float(coverage_frac), 4),
+                    },
+                }
+                continue
+
+        variants[variant_name] = {
+            "coverage": {
+                "eligible": int(total_eligible),
+                "total": int(total_count),
+                "fraction": round(float(coverage_frac), 4),
+            },
+            "within_era": within_summary,
+            "cross_era": cross_summary,
+        }
+
+    table_rows = []
+    for variant_name, row in variants.items():
+        agg = _aggregate([
+            *[
+                {
+                    "n_test": f["n_test"],
+                    "brier": f["brier"],
+                    "brier_skill": f["brier_skill"],
+                    "roc_auc": f["roc_auc"],
+                    "ece": f["ece"],
+                    "ece_by_range": {},
+                    "conformal_coverage_80": {"coverage": None},
+                    "reliability": [],
+                }
+                for f in row["within_era"]["folds"] + row["cross_era"]["folds"]
+                if f["n_test"] > 0
+            ],
+        ])
+        table_rows.append({
+            "variant": variant_name,
+            "coverage_fraction": row["coverage"]["fraction"],
+            "coverage_eligible": row["coverage"]["eligible"],
+            "coverage_total": row["coverage"]["total"],
+            "brier_weighted": agg["brier_weighted"],
+            "brier_skill_weighted": agg["brier_skill_weighted"],
+            "roc_auc_weighted": agg["roc_auc_weighted"],
+            "ece_weighted": agg["ece_weighted"],
+        })
+
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "temporal_cuts": ["within_era", "cross_era"],
+        "variants": variants,
+        "skipped_variants": skipped,
+        "summary_table": table_rows,
+    }
+
+
 # ─── ASCII reliability diagram ────────────────────────────────────────────────
 
 def _print_reliability(rows: list[dict], title: str = "Reliability diagram") -> None:
@@ -507,6 +731,11 @@ def main() -> None:
     _OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     _OUTPUT_PATH.write_text(json.dumps(output, indent=2, ensure_ascii=True))
     logger.info("Results saved to %s", _OUTPUT_PATH)
+
+    baseline_v1 = _build_eval_baseline_v1(within_results, cross_results)
+    _BASELINE_V1_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _BASELINE_V1_PATH.write_text(json.dumps(baseline_v1, indent=2, ensure_ascii=True))
+    logger.info("Variant baseline saved to %s", _BASELINE_V1_PATH)
 
     # Print summary
     print("\n" + "=" * 60)
