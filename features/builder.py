@@ -21,6 +21,8 @@ _LLM_FEATURE_NAMES = [
     "llm_event_certainty",
     "llm_actor_hostility",
     "llm_available",
+    # Semantic embedding feature (v4)
+    "llm_query_event_similarity",  # cosine sim between question embedding and mean event embedding
 ]
 
 _DECAY_HALFLIFE_DAYS = 7.0
@@ -289,26 +291,48 @@ def build_features(
     llm_feats: dict[str, float] = {k: 0.0 for k in _LLM_FEATURE_NAMES}
 
     if use_llm and question and events:
-        try:
-            from llm.text_features import extract_llm_features
-            headlines = [
-                ev.raw_title
-                for ev in sorted(events, key=lambda e: e.occurred_at, reverse=True)
-                if ev.raw_title.strip()
-            ]
-            if headlines:
+        # Collect headlines once — shared by both text extractor and embedder
+        headlines = [
+            ev.raw_title
+            for ev in sorted(events, key=lambda e: e.occurred_at, reverse=True)
+            if ev.raw_title.strip()
+        ]
+
+        # ── Text feature extraction ───────────────────────────────────────────
+        if headlines:
+            try:
+                from llm.text_features import extract_llm_features
                 llm_result = extract_llm_features(question=question, headlines=headlines)
                 llm_feats.update(llm_result.to_feature_dict())
                 if llm_result.available:
                     logger.info(
-                        "llm features: threat=%.2f esc=%.2f deesc=%.2f "
+                        "llm text features: threat=%.2f esc=%.2f deesc=%.2f "
                         "cert=%.2f host=%.2f (%.0fms)",
                         llm_result.threat_level, llm_result.escalation,
                         llm_result.deescalation, llm_result.event_certainty,
                         llm_result.actor_hostility, llm_result.latency_ms or 0,
                     )
-        except Exception as e:
-            logger.debug("llm feature extraction skipped: %s", e)
+            except Exception as e:
+                logger.debug("llm text feature extraction skipped: %s", e)
+
+        # ── Semantic similarity embedding ─────────────────────────────────────
+        if headlines:
+            try:
+                from llm.embedder import embed_events_and_question
+                embed_result = embed_events_and_question(
+                    question=question,
+                    headlines=headlines,
+                )
+                if embed_result.available:
+                    llm_feats["llm_query_event_similarity"] = embed_result.query_similarity
+                    logger.info(
+                        "llm embedding: query_sim=%.3f  n=%d  (%.0fms)",
+                        embed_result.query_similarity,
+                        embed_result.n_embedded,
+                        embed_result.latency_ms or 0,
+                    )
+            except Exception as e:
+                logger.debug("llm embedding skipped: %s", e)
 
     feat.update(llm_feats)
 

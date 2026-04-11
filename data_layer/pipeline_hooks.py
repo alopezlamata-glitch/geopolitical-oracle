@@ -153,12 +153,13 @@ def persist_canonical_events(
             logger.debug("canonical_document insert failed (non-fatal): %s", e)
             continue
 
-        # canonical_events row
+        # canonical_events row (with resolved entity IDs when available)
+        actor_ids = _entity_ids_for_actors(ev.actors, ev.country)
         event_id = write_canonical_event(
             doc_id=doc_id,
             event_type=ev.event_type,
             event_time=ev.occurred_at,
-            actor_entity_ids=[],   # entity resolution not yet wired
+            actor_entity_ids=actor_ids,
             location_entity_id=None,
             intensity=float(ev.severity),
             polarity=ev.polarity,
@@ -178,6 +179,130 @@ def persist_canonical_events(
 
     logger.debug("persist_canonical_events: wrote %d events", len(event_ids))
     return event_ids
+
+
+# ── 2b. Entity resolution (non-fatal, Ollama optional) ───────────────────────
+
+# In-process cache: (mention_lower, country_lower) → entity_id
+_entity_id_cache: dict[tuple[str, str], str] = {}
+
+
+def _entity_ids_for_actors(actors: list[str], country: str) -> list[str]:
+    """
+    Resolve a list of actor mentions to entity_ids.
+
+    - Checks the in-process cache first.
+    - Calls Ollama entity resolver for unknown mentions (non-fatal).
+    - Writes resolved entities + aliases to the DB.
+    - Returns list of entity_ids (empty list if nothing resolved or DB unavailable).
+    """
+    if not actors:
+        return []
+
+    try:
+        from llm.entity_resolver import resolve_entities_batch
+        from data_layer.writers import write_entity, write_entity_alias
+    except ImportError:
+        return []
+
+    entity_ids: list[str] = []
+    unique_actors = list(dict.fromkeys(a for a in actors if a and a.strip()))
+
+    try:
+        resolutions = resolve_entities_batch(unique_actors, context=country or "")
+    except Exception as e:
+        logger.debug("entity_resolver batch failed (non-fatal): %s", e)
+        return []
+
+    for resolution in resolutions:
+        mention = resolution.mention
+        cache_key = (mention.lower(), (country or "").lower())
+
+        # Check in-process cache
+        if cache_key in _entity_id_cache:
+            entity_ids.append(_entity_id_cache[cache_key])
+            continue
+
+        # Write canonical entity to DB
+        entity_id = write_entity(
+            canonical_name=resolution.canonical,
+            entity_type=resolution.entity_type,
+            country=country or None,
+            description=None,
+        )
+        if entity_id is None:
+            continue
+
+        # Write alias mapping (original mention → canonical entity)
+        if mention.lower() != resolution.canonical.lower():
+            write_entity_alias(
+                entity_id=entity_id,
+                alias=mention,
+                source="llm_extracted",
+                confidence=resolution.confidence,
+            )
+
+        _entity_id_cache[cache_key] = entity_id
+        entity_ids.append(entity_id)
+
+    logger.debug(
+        "_entity_ids_for_actors: resolved %d/%d actors",
+        len(entity_ids), len(unique_actors),
+    )
+    return entity_ids
+
+
+def persist_entity_resolution(
+    canonical_events: list["CanonicalEvent"],
+    country: str = "",
+) -> dict[str, str]:
+    """
+    Resolve all unique actor mentions from a batch of canonical events.
+
+    Returns a dict mapping mention → entity_id for actors that were resolved
+    and written to the DB. Useful for post-hoc entity linking.
+
+    This is the standalone version; `persist_canonical_events()` calls
+    `_entity_ids_for_actors()` inline during the write loop.
+    """
+    all_mentions: set[str] = set()
+    for ev in canonical_events:
+        all_mentions.update(a for a in (ev.actors or []) if a and a.strip())
+
+    if not all_mentions:
+        return {}
+
+    try:
+        from llm.entity_resolver import resolve_entities_batch
+        from data_layer.writers import write_entity, write_entity_alias
+    except ImportError:
+        return {}
+
+    result: dict[str, str] = {}
+    try:
+        resolutions = resolve_entities_batch(list(all_mentions), context=country)
+        for res in resolutions:
+            entity_id = write_entity(
+                canonical_name=res.canonical,
+                entity_type=res.entity_type,
+                country=country or None,
+            )
+            if entity_id:
+                write_entity_alias(
+                    entity_id=entity_id,
+                    alias=res.mention,
+                    source="llm_extracted",
+                    confidence=res.confidence,
+                )
+                result[res.mention] = entity_id
+        logger.info(
+            "persist_entity_resolution: resolved %d/%d mentions",
+            len(result), len(all_mentions),
+        )
+    except Exception as e:
+        logger.warning("persist_entity_resolution failed (non-fatal): %s", e)
+
+    return result
 
 
 # ── 3. Question → questions table ────────────────────────────────────────────

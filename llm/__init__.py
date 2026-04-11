@@ -13,6 +13,7 @@ Environment variables:
 from llm.client import OllamaClient, get_client
 from llm.text_features import extract_llm_features, LLMFeatures
 from llm.entity_resolver import resolve_entity, EntityCanon
+from llm.embedder import embed_events_and_question, EmbedResult, cosine_similarity
 
 __all__ = [
     "OllamaClient",
@@ -21,4 +22,7 @@ __all__ = [
     "LLMFeatures",
     "resolve_entity",
     "EntityCanon",
+    "embed_events_and_question",
+    "EmbedResult",
+    "cosine_similarity",
 ]

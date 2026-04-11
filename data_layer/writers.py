@@ -304,6 +304,102 @@ def write_question(
         return None
 
 
+# ── Entity ────────────────────────────────────────────────────────────────────
+
+def write_entity(
+    canonical_name: str,
+    entity_type: str,
+    country: Optional[str] = None,
+    description: Optional[str] = None,
+    wikidata_id: Optional[str] = None,
+    conflict_baserate: Optional[float] = None,
+    polity_norm: Optional[float] = None,
+    mil_spending_norm: Optional[float] = None,
+) -> Optional[str]:
+    """
+    Upsert a canonical entity. Returns entity_id.
+
+    Uses ON CONFLICT DO NOTHING — the same entity may be inserted from
+    multiple prediction runs; only the first write creates the record.
+    """
+    from data_layer.db import get_db, table_exists
+    from datetime import datetime, timezone
+
+    if not table_exists("entities"):
+        return None
+    if not canonical_name.strip():
+        return None
+
+    entity_id = _entity_id(canonical_name, entity_type)
+    now = datetime.now(timezone.utc)
+
+    try:
+        db = get_db()
+        db.execute(
+            """
+            INSERT INTO entities (
+                entity_id, canonical_name, entity_type,
+                wikidata_id, country, description,
+                conflict_baserate, polity_norm, mil_spending_norm,
+                first_seen_at, last_updated_at, is_active
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, TRUE)
+            ON CONFLICT (entity_id) DO NOTHING
+            """,
+            [
+                entity_id, canonical_name.strip(), entity_type,
+                wikidata_id, country, description,
+                conflict_baserate, polity_norm, mil_spending_norm,
+                now, now,
+            ]
+        )
+        return entity_id
+    except Exception as e:
+        logger.warning("write_entity failed (%s): %s", canonical_name, e)
+        return None
+
+
+def write_entity_alias(
+    entity_id: str,
+    alias: str,
+    source: str = "extracted",
+    confidence: float = 0.9,
+    language: str = "en",
+) -> Optional[str]:
+    """
+    Write an alias for a known entity. Returns alias_id or None.
+
+    The (alias, alias_language) pair is unique — ON CONFLICT DO NOTHING
+    if the alias is already registered (possibly to a different entity).
+    """
+    from data_layer.db import get_db, table_exists
+    import hashlib
+
+    if not table_exists("entity_aliases"):
+        return None
+    if not alias.strip():
+        return None
+
+    alias_id = "ali_" + hashlib.sha256(
+        f"{alias.lower().strip()}|{language}".encode()
+    ).hexdigest()[:24]
+
+    try:
+        db = get_db()
+        db.execute(
+            """
+            INSERT INTO entity_aliases (
+                alias_id, entity_id, alias, alias_language, source, confidence
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT (alias, alias_language) DO NOTHING
+            """,
+            [alias_id, entity_id, alias.strip(), language, source, confidence]
+        )
+        return alias_id
+    except Exception as e:
+        logger.debug("write_entity_alias failed (%s → %s): %s", alias, entity_id, e)
+        return None
+
+
 # ── Prediction ────────────────────────────────────────────────────────────────
 
 def write_prediction(
