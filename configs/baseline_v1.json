@@ -1,0 +1,48 @@
+{
+  "baseline_version": "baseline_v1",
+  "frozen": {
+    "feature_schema": {
+      "name": "v3",
+      "source": "features.builder.get_feature_names",
+      "notes": "27-feature schema; market features excluded from model vector"
+    },
+    "model": {
+      "model_id": "xgb_model",
+      "model_version": "data/model/xgb_model.json",
+      "loader": "model.trainer.load_model"
+    },
+    "calibration": {
+      "enabled": true,
+      "method": "isotonic",
+      "artifact": "data/model/calibrator.pkl",
+      "loader": "model.calibrator.load_calibrator",
+      "apply_rule": "apply only when model is available and variant != market_only"
+    },
+    "market_prior_rule": {
+      "untrained_or_market_only": "mean(valid market probabilities) else 0.5",
+      "blended_when_trained": {
+        "space": "log_odds",
+        "one_market": {
+          "model_weight": 0.6,
+          "market_weight": 0.4
+        },
+        "two_markets": {
+          "model_weight": 0.5,
+          "market_weight": 0.5
+        }
+      }
+    },
+    "variants": [
+      "model_only",
+      "market_only",
+      "blended"
+    ],
+    "default_variant": "blended"
+  },
+  "out_of_scope": [
+    "feature engineering redesign",
+    "new model family",
+    "new calibration method",
+    "new market fusion policy"
+  ]
+}
