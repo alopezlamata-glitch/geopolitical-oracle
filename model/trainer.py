@@ -20,8 +20,45 @@ _CALIBRATOR_PATH = _MODEL_DIR / "calibrator.pkl"
 _BASELINE_PATH = _MODEL_DIR / "feature_baseline.json"
 
 
-def load_training_data() -> tuple[list[dict], list[int]]:
-    """Load all labeled training examples from data/training/."""
+def load_training_data_from_lakehouse() -> tuple[list[dict], list[int]]:
+    """
+    Primary training path (DuckDB lakehouse).
+
+    Reads snapshots that are already resolved, using persisted explicit_features.
+    Returns (X_dicts, y).
+    """
+    from data_layer.db import get_db, init_schema
+
+    init_schema()
+    db = get_db()
+
+    rows = db.execute(
+        """
+        SELECT
+            trs.explicit_features,
+            CAST(trs.outcome AS INTEGER) AS outcome
+        FROM training_ready_snapshots trs
+        ORDER BY trs.as_of_time ASC
+        """
+    ).fetchall()
+
+    X, y = [], []
+    for raw_features, outcome in rows:
+        try:
+            features = raw_features
+            if isinstance(raw_features, str):
+                features = json.loads(raw_features)
+            if not isinstance(features, dict):
+                continue
+            X.append(features)
+            y.append(int(outcome))
+        except Exception as e:
+            logger.warning("trainer: skipping malformed lakehouse row: %s", e)
+    return X, y
+
+
+def load_training_data_legacy() -> tuple[list[dict], list[int]]:
+    """Legacy fallback: load labeled examples from local JSON files."""
     X, y = [], []
     if not _TRAINING_DIR.exists():
         return X, y
@@ -33,8 +70,24 @@ def load_training_data() -> tuple[list[dict], list[int]]:
             X.append(rec["features"])
             y.append(int(rec["outcome"]))
         except Exception as e:
-            logger.warning("trainer: skipping %s: %s", f.name, e)
+            logger.warning("trainer: skipping legacy %s: %s", f.name, e)
     return X, y
+
+
+def load_training_data() -> tuple[list[dict], list[int]]:
+    """
+    Load labeled training examples.
+
+    Primary source: DuckDB lakehouse (`training_ready_snapshots`).
+    Legacy fallback: `data/training/*.json` only when lakehouse path errors.
+    """
+    try:
+        X, y = load_training_data_from_lakehouse()
+        logger.info("trainer: loaded %d examples from lakehouse", len(X))
+        return X, y
+    except Exception as e:
+        logger.warning("trainer: lakehouse unavailable, falling back to legacy JSON: %s", e)
+        return load_training_data_legacy()
 
 
 def _to_matrix(X_dicts: list[dict], feature_names: list[str]) -> np.ndarray:
@@ -71,11 +124,6 @@ def train() -> bool:
     X_train, X_val = X[:split], X[split:]
     y_train, y_val = y_arr[:split], y_arr[split:]
 
-    # Compute scale_pos_weight to handle class imbalance.
-    # scale_pos_weight upweights the positive (minority) class gradient.
-    # Only meaningful when positives are the minority (n_pos < n_neg).
-    # If positives are the majority, scale_pos_weight < 1 would incorrectly
-    # DOWN-weight them, biasing predictions toward 0. Clamp to >= 1.0.
     n_neg = int((y_train == 0).sum())
     n_pos = int((y_train == 1).sum())
     scale_pos_weight = max(1.0, n_neg / max(n_pos, 1))
@@ -103,14 +151,12 @@ def train() -> bool:
     _FEATURE_NAMES_PATH.write_text(json.dumps(feature_names))
     logger.info("trainer: model saved to %s", _MODEL_PATH)
 
-    # Save feature baseline (mean + std per feature) for drift detection
     baseline = {}
     for i, fname in enumerate(feature_names):
         col = X_train[:, i]
         baseline[fname] = {"mean": float(col.mean()), "std": float(col.std()), "values": col.tolist()}
     _BASELINE_PATH.write_text(json.dumps(baseline))
 
-    # Calibrate
     from model.calibrator import calibrate
     calibrate(model, X_val, y_val, feature_names)
 

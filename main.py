@@ -195,6 +195,7 @@ def cmd_predict(args) -> None:
         country=country,
     )
     event_ids = [e.event_id for e in deduped]
+    # Legacy artifact for local debugging/export; not used by train/label/eval primary flows
     save_features(question, features, provenance, event_ids)
 
     # ── Step 5: Predict ───────────────────────────────────────────────────────
@@ -208,7 +209,7 @@ def cmd_predict(args) -> None:
     sys.stdout.buffer.write(("\n" + output + "\n").encode("utf-8", errors="replace"))
     sys.stdout.buffer.flush()
 
-    # ── Step 7: Save JSON prediction (existing path) ──────────────────────────
+    # ── Step 7: Save legacy JSON artifacts (secondary/debug only) ───────────────
     path = save_prediction(question, prediction, attribution, features, provenance, len(deduped))
     print(f"\nSaved: {path}")
 
@@ -261,57 +262,34 @@ def cmd_train(args) -> None:
 
 
 def cmd_label(args) -> None:
-    """Add a resolved outcome to a prediction file."""
-    pred_dir = Path("data/predictions")
-    if not pred_dir.exists():
-        print("No predictions directory found.")
-        return
+    """Resolve an outcome by prediction_id (primary: lakehouse, fallback: legacy JSON)."""
+    from data_layer.resolution import resolve_outcome_by_prediction_id, resolve_outcome_legacy_json
 
-    # Find prediction by ID prefix
-    matches = list(pred_dir.glob(f"*{args.prediction_id}*.json"))
-    if not matches:
-        matches = list(pred_dir.glob("*.json"))
-        # Try to match by timestamp prefix
-        matches = [f for f in matches if args.prediction_id in f.stem]
-
-    if not matches:
-        print(f"No prediction found matching ID: {args.prediction_id}")
-        return
-
-    path = matches[0]
-    data = json.loads(path.read_text())
     outcome = 1 if args.outcome.lower() in ("yes", "1", "true") else 0
-    data["resolved"] = True
-    data["outcome"] = outcome
-    path.write_text(json.dumps(data, indent=2))
-    print(f"Labeled {path.name}: outcome={outcome}")
 
-    # Copy to training data
-    training_dir = Path("data/training")
-    training_dir.mkdir(parents=True, exist_ok=True)
-    training_record = {
-        "question": data["question"],
-        "timestamp": data["timestamp"],
-        "features": data["features"],
-        "outcome": outcome,
-    }
-    train_path = training_dir / path.name
-    train_path.write_text(json.dumps(training_record, indent=2))
-    print(f"Added to training data: {train_path.name}")
-
-    # Also update the lakehouse (non-fatal)
+    # Primary source of truth: DuckDB lakehouse
     try:
-        from data_layer.pipeline_hooks import persist_outcome
-        updated = persist_outcome(
-            question_raw_text=data["question"],
+        updated = resolve_outcome_by_prediction_id(
+            prediction_id=args.prediction_id,
             outcome=outcome,
             resolver_source="user",
             resolution_notes=f"Labeled via CLI: prediction_id={args.prediction_id}",
         )
         if updated:
-            print("Lakehouse updated: question resolved, feature_snapshot labeled.")
+            print(f"Labeled prediction {args.prediction_id} in lakehouse: outcome={outcome}")
+            return
     except Exception as e:
-        logger.debug("lakehouse outcome update failed (non-fatal): %s", e)
+        logger.warning("label: lakehouse path failed, trying legacy fallback: %s", e)
+
+    # Legacy/deprecated fallback path (temporary compatibility)
+    if resolve_outcome_legacy_json(args.prediction_id, outcome):
+        print(
+            f"Labeled {args.prediction_id} via legacy JSON fallback (deprecated): outcome={outcome}. "
+            "DuckDB remains the primary source of truth."
+        )
+        return
+
+    print(f"No prediction found matching ID: {args.prediction_id}")
 
 
 def cmd_calibration(args) -> None:
