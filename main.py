@@ -42,8 +42,20 @@ for _log in ("aiohttp", "urllib3", "feedparser", "shap"):
     logging.getLogger(_log).setLevel(logging.WARNING)
 
 
-async def _collect_all(question: str, country: str | None) -> tuple[list, float | None, float | None]:
-    """Run all collectors concurrently. Returns (raw_events, metaculus_p, polymarket_p)."""
+async def _collect_all(question: str, country: str | None) -> tuple[list, dict]:
+    """
+    Run all collectors concurrently.
+
+    Returns:
+        (raw_events, market_meta) where market_meta carries quality metadata:
+          {
+            "metaculus_p": float | None,
+            "metaculus_forecasters": int | None,
+            "polymarket_p": float | None,
+            "polymarket_volume": float | None,
+            "polymarket_match_score": float | None,
+          }
+    """
     from collector import collect_gdelt, collect_rss, collect_metaculus, collect_polymarket, collect_acled
 
     # No session-level timeout — each collector manages its own timeout
@@ -58,9 +70,9 @@ async def _collect_all(question: str, country: str | None) -> tuple[list, float 
         )
 
     gdelt_events = results[0] if not isinstance(results[0], Exception) else []
-    rss_events = results[1] if not isinstance(results[1], Exception) else []
-    meta_result = results[2] if not isinstance(results[2], Exception) else (None, 0)
-    poly_result = results[3] if not isinstance(results[3], Exception) else (None, 0.0)
+    rss_events   = results[1] if not isinstance(results[1], Exception) else []
+    meta_result  = results[2] if not isinstance(results[2], Exception) else (None, 0)
+    poly_result  = results[3] if not isinstance(results[3], Exception) else (None, 0.0, 0.0)
     acled_events = results[4] if not isinstance(results[4], Exception) else []
 
     for i, r in enumerate(results):
@@ -68,10 +80,29 @@ async def _collect_all(question: str, country: str | None) -> tuple[list, float 
             logger.warning("collector[%d] raised: %s", i, r)
 
     all_events = (gdelt_events or []) + (rss_events or []) + (acled_events or [])
-    metaculus_p = meta_result[0] if isinstance(meta_result, tuple) else None
-    polymarket_p = poly_result[0] if isinstance(poly_result, tuple) else None
 
-    return all_events, metaculus_p, polymarket_p
+    # Unpack market quality metadata
+    if isinstance(meta_result, tuple):
+        metaculus_p, metaculus_forecasters = meta_result[0], (meta_result[1] if len(meta_result) > 1 else None)
+    else:
+        metaculus_p, metaculus_forecasters = None, None
+
+    if isinstance(poly_result, tuple):
+        polymarket_p    = poly_result[0]
+        polymarket_vol  = poly_result[1] if len(poly_result) > 1 else None
+        polymarket_mscore = poly_result[2] if len(poly_result) > 2 else None
+    else:
+        polymarket_p, polymarket_vol, polymarket_mscore = None, None, None
+
+    market_meta = {
+        "metaculus_p": metaculus_p,
+        "metaculus_forecasters": int(metaculus_forecasters) if metaculus_forecasters else None,
+        "polymarket_p": polymarket_p,
+        "polymarket_volume": float(polymarket_vol) if polymarket_vol else None,
+        "polymarket_match_score": float(polymarket_mscore) if polymarket_mscore else None,
+    }
+
+    return all_events, market_meta
 
 
 def _print_parse_summary(pq, ood) -> None:
@@ -172,10 +203,20 @@ def cmd_predict(args) -> None:
     print("Collecting from GDELT, RSS, Metaculus, Polymarket, ACLED...")
 
     # ── Step 2: Collect ───────────────────────────────────────────────────────
-    raw_events, metaculus_p, polymarket_p = asyncio.run(_collect_all(question, country))
+    raw_events, market_meta = asyncio.run(_collect_all(question, country))
     as_of_time = datetime.now(timezone.utc)   # strict data cutoff: nothing after this
 
+    metaculus_p   = market_meta["metaculus_p"]
+    polymarket_p  = market_meta["polymarket_p"]
+
     print(f"  Raw events collected: {len(raw_events)}")
+    if metaculus_p is not None:
+        print(f"  Metaculus signal    : p={metaculus_p:.3f}  "
+              f"(n={market_meta['metaculus_forecasters'] or '?'})")
+    if polymarket_p is not None:
+        print(f"  Polymarket signal   : p={polymarket_p:.3f}  "
+              f"(vol=${market_meta['polymarket_volume'] or 0:,.0f}  "
+              f"match={market_meta['polymarket_match_score'] or 0:.2f})")
 
     # ── Step 3: Normalize + deduplicate ───────────────────────────────────────
     canonical = normalize_all(raw_events)
@@ -198,8 +239,16 @@ def cmd_predict(args) -> None:
     # Legacy artifact for local debugging/export; not used by train/label/eval primary flows
     save_features(question, features, provenance, event_ids)
 
-    # ── Step 5: Predict ───────────────────────────────────────────────────────
-    prediction = predict(features, metaculus_p=metaculus_p, polymarket_p=polymarket_p)
+    # ── Step 5: Predict (calibrated market blend) ─────────────────────────────
+    prediction = predict(
+        features,
+        metaculus_p=metaculus_p,
+        polymarket_p=polymarket_p,
+        metaculus_forecasters=market_meta["metaculus_forecasters"],
+        polymarket_volume=market_meta["polymarket_volume"],
+        polymarket_match_score=market_meta["polymarket_match_score"],
+        as_of_time=as_of_time,
+    )
     events_by_id = {e.event_id: e for e in deduped}
     attribution = compute_shap_attribution(features, provenance, events_by_id)
     drift_flags = detect_drift(features)

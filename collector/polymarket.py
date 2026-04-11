@@ -86,4 +86,4 @@ async def collect_polymarket(session: aiohttp.ClientSession, query: str) -> tupl
 
     if best_p is not None:
         logger.info("polymarket: found p=%.3f (vol=%.0f, score=%.2f)", best_p, best_vol, best_score)
-    return best_p, best_vol
+    return best_p, best_vol, best_score

@@ -83,6 +83,21 @@ def format_output(
         row(f"  Evidence quality: {quality}"),
     ]
 
+    # Market blend line (only shown when a blend actually happened)
+    blend_strategy = prediction.get("blend_strategy", "model_only")
+    if blend_strategy != "model_only":
+        p_model_raw = prediction.get("p_model_raw", raw)
+        p_market_raw = prediction.get("p_market_raw")
+        w = prediction.get("market_weight", 0.0)
+        sources = ", ".join(prediction.get("market_sources", []))
+        match_s = prediction.get("market_match_score")
+        match_str = f"  match={match_s:.2f}" if match_s is not None else ""
+        lines.append(row(f"  Market blend    : [{blend_strategy}]"))
+        lines.append(row(f"    model={p_model_raw:.3f}  market={p_market_raw:.3f}  w={w:.2f}  src={sources}{match_str}"))
+    elif prediction.get("market_gate_reason"):
+        reason = prediction["market_gate_reason"][:48]
+        lines.append(row(f"  Market          : not used ({reason})"))
+
     if untrained:
         lines.append(row(f"  ⚠  UNTRAINED MODEL — prior estimate only"))
 
@@ -167,6 +182,18 @@ def save_prediction(
         "ci_hi": prediction["ci_hi"],
         "ci_method": prediction.get("ci_method", "heuristic"),
         "untrained": prediction.get("untrained", False),
+        # ── Market blend audit trail ──────────────────────────────────────────
+        "p_model_raw": prediction.get("p_model_raw"),
+        "p_market_raw": prediction.get("p_market_raw"),
+        "market_weight": prediction.get("market_weight", 0.0),
+        "market_sources": prediction.get("market_sources", []),
+        "market_match_score": prediction.get("market_match_score"),
+        "blend_strategy": prediction.get("blend_strategy", "model_only"),
+        "blend_strategy_version": prediction.get("blend_strategy_version", "logodds_v1"),
+        "market_gate_passed": prediction.get("market_gate_passed", False),
+        "market_gate_reason": prediction.get("market_gate_reason"),
+        "n_market_signals": prediction.get("n_market_signals", 0),
+        # ─────────────────────────────────────────────────────────────────────
         "n_events": n_events,
         "features": features,
         "attribution": {
