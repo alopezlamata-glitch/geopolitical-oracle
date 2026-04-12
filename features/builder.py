@@ -87,6 +87,7 @@ def build_features(
     now: Optional[datetime] = None,
     question: Optional[str] = None,        # used for LLM feature extraction (non-fatal)
     use_llm: bool = True,                  # set False to skip LLM even if Ollama available
+    wiki_context: str = "",                # Wikipedia background text for LLM prompt enrichment
 ) -> tuple[dict[str, float], dict[str, list[dict]]]:
     """
     Returns (feature_vector, provenance).
@@ -98,8 +99,9 @@ def build_features(
         polymarket_p: passed through for market override — NOT added to feature vector
         country     : country name for structural features lookup
         now         : reference time (defaults to UTC now)
-        question    : original question text (used for LLM feature extraction)
-        use_llm     : if True, attempt Ollama text feature extraction (non-fatal)
+        question     : original question text (used for LLM feature extraction)
+        use_llm      : if True, attempt Ollama text feature extraction (non-fatal)
+        wiki_context : Wikipedia background text injected into LLM prompt (optional)
 
     Market signals are applied as a post-model override in predictor/inference.py,
     not as XGBoost input features, because 0% of ICEWS training examples have market data.
@@ -302,7 +304,11 @@ def build_features(
         if headlines:
             try:
                 from llm.text_features import extract_llm_features
-                llm_result = extract_llm_features(question=question, headlines=headlines)
+                llm_result = extract_llm_features(
+                    question=question,
+                    headlines=headlines,
+                    wiki_context=wiki_context,
+                )
                 llm_feats.update(llm_result.to_feature_dict())
                 if llm_result.available:
                     logger.info(

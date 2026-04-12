@@ -42,21 +42,20 @@ for _log in ("aiohttp", "urllib3", "feedparser", "shap"):
     logging.getLogger(_log).setLevel(logging.WARNING)
 
 
-async def _collect_all(question: str, country: str | None) -> tuple[list, dict]:
+async def _collect_all(question: str, country: str | None) -> tuple[list, dict, str]:
     """
-    Run all collectors concurrently.
+    Run all collectors concurrently (6 in parallel including Wikipedia).
 
     Returns:
-        (raw_events, market_meta) where market_meta carries quality metadata:
-          {
-            "metaculus_p": float | None,
-            "metaculus_forecasters": int | None,
-            "polymarket_p": float | None,
-            "polymarket_volume": float | None,
-            "polymarket_match_score": float | None,
-          }
+        (raw_events, market_meta, wiki_context) where:
+          - raw_events     : list[RawEvent] from GDELT + RSS + ACLED
+          - market_meta    : dict with Metaculus/Polymarket quality signals
+          - wiki_context   : str  Wikipedia article extract (may be "")
     """
-    from collector import collect_gdelt, collect_rss, collect_metaculus, collect_polymarket, collect_acled
+    from collector import (
+        collect_gdelt, collect_rss, collect_metaculus,
+        collect_polymarket, collect_acled, collect_wikipedia,
+    )
 
     # No session-level timeout — each collector manages its own timeout
     async with aiohttp.ClientSession() as session:
@@ -66,6 +65,7 @@ async def _collect_all(question: str, country: str | None) -> tuple[list, dict]:
             collect_metaculus(session, question),
             collect_polymarket(session, question),
             collect_acled(session, question, country=country),
+            collect_wikipedia(session, question),
             return_exceptions=True,
         )
 
@@ -74,12 +74,21 @@ async def _collect_all(question: str, country: str | None) -> tuple[list, dict]:
     meta_result  = results[2] if not isinstance(results[2], Exception) else (None, 0)
     poly_result  = results[3] if not isinstance(results[3], Exception) else (None, 0.0, 0.0)
     acled_events = results[4] if not isinstance(results[4], Exception) else []
+    wiki_result  = results[5] if not isinstance(results[5], Exception) else None
 
     for i, r in enumerate(results):
         if isinstance(r, Exception):
             logger.warning("collector[%d] raised: %s", i, r)
 
     all_events = (gdelt_events or []) + (rss_events or []) + (acled_events or [])
+
+    # Wikipedia context (plain string, not an event)
+    from collector.wikipedia import WikipediaResult
+    if isinstance(wiki_result, WikipediaResult) and wiki_result.found:
+        wiki_context = wiki_result.content
+        logger.info("wikipedia: %d chars from %r", len(wiki_context), wiki_result.page_title)
+    else:
+        wiki_context = ""
 
     # Unpack market quality metadata
     if isinstance(meta_result, tuple):
@@ -102,7 +111,7 @@ async def _collect_all(question: str, country: str | None) -> tuple[list, dict]:
         "polymarket_match_score": float(polymarket_mscore) if polymarket_mscore else None,
     }
 
-    return all_events, market_meta
+    return all_events, market_meta, wiki_context
 
 
 def _print_parse_summary(pq, ood) -> None:
@@ -203,7 +212,7 @@ def cmd_predict(args) -> None:
     print("Collecting from GDELT, RSS, Metaculus, Polymarket, ACLED...")
 
     # ── Step 2: Collect ───────────────────────────────────────────────────────
-    raw_events, market_meta = asyncio.run(_collect_all(question, country))
+    raw_events, market_meta, wiki_context = asyncio.run(_collect_all(question, country))
     as_of_time = datetime.now(timezone.utc)   # strict data cutoff: nothing after this
 
     metaculus_p   = market_meta["metaculus_p"]
@@ -229,6 +238,8 @@ def cmd_predict(args) -> None:
         return
 
     # ── Step 4: Build features (+ LLM enrichment if Ollama available) ────────
+    if wiki_context:
+        print(f"  Wikipedia       : {len(wiki_context)} chars of background context")
     features, provenance = build_features(
         deduped,
         metaculus_p=metaculus_p,
@@ -236,6 +247,7 @@ def cmd_predict(args) -> None:
         country=country,
         question=question,
         use_llm=True,
+        wiki_context=wiki_context,
     )
     if features.get("llm_available", 0.0) > 0:
         print(f"  LLM features    : threat={features['llm_threat_level']:.2f}  "

@@ -3,6 +3,7 @@ from .rss import collect_rss
 from .metaculus import collect_metaculus
 from .polymarket import collect_polymarket
 from .acled import collect_acled
+from .wikipedia import collect_wikipedia, WikipediaResult
 
 __all__ = [
     "collect_gdelt",
@@ -10,4 +11,6 @@ __all__ = [
     "collect_metaculus",
     "collect_polymarket",
     "collect_acled",
+    "collect_wikipedia",
+    "WikipediaResult",
 ]

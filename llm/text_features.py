@@ -56,7 +56,7 @@ _SYSTEM_PROMPT = (
 
 _PROMPT_TEMPLATE = """\
 Question to forecast: {question}
-
+{wiki_section}
 Recent geopolitical news ({n} headlines):
 {headlines}
 
@@ -108,11 +108,17 @@ def _clip(v) -> float:
         return 0.0
 
 
-def _build_prompt(question: str, headlines: list[str]) -> str:
+def _build_prompt(question: str, headlines: list[str], wiki_context: str = "") -> str:
     truncated = [h[:MAX_HEADLINE_LEN] for h in headlines[:MAX_HEADLINES]]
     joined = "\n".join(f"- {h}" for h in truncated)
+    wiki_section = (
+        f"\nBackground context (Wikipedia):\n{wiki_context[:1_500]}\n"
+        if wiki_context.strip()
+        else ""
+    )
     return _PROMPT_TEMPLATE.format(
         question=question[:200],
+        wiki_section=wiki_section,
         n=len(truncated),
         headlines=joined,
     )
@@ -148,12 +154,13 @@ async def _extract_async(
     question: str,
     headlines: list[str],
     client: OllamaClient,
+    wiki_context: str = "",
 ) -> LLMFeatures:
     """Core async extraction — called from the sync wrapper."""
     import time
     t0 = time.monotonic()
 
-    prompt = _build_prompt(question, headlines)
+    prompt = _build_prompt(question, headlines, wiki_context)
     raw = await client.generate_json(
         prompt=prompt,
         system=_SYSTEM_PROMPT,
@@ -185,6 +192,7 @@ def extract_llm_features(
     question: str,
     headlines: list[str],
     client: Optional[OllamaClient] = None,
+    wiki_context: str = "",
 ) -> LLMFeatures:
     """
     Synchronous wrapper — can be called from non-async code (e.g. features/builder.py).
@@ -193,9 +201,11 @@ def extract_llm_features(
     unavailable. Never raises.
 
     Args:
-        question  : the binary question being forecast
-        headlines : list of event titles/descriptions (most recent first)
-        client    : OllamaClient instance; uses module singleton if None
+        question     : the binary question being forecast
+        headlines    : list of event titles/descriptions (most recent first)
+        client       : OllamaClient instance; uses module singleton if None
+        wiki_context : optional Wikipedia background text (truncated to 1500 chars
+                       inside _build_prompt); improves LLM context quality
     """
     if not headlines:
         return LLMFeatures(available=False)
@@ -220,7 +230,7 @@ def extract_llm_features(
             )
             return LLMFeatures(available=False)
 
-        return asyncio.run(_extract_async(question, headlines, client))
+        return asyncio.run(_extract_async(question, headlines, client, wiki_context))
     except Exception as e:
         logger.warning("llm text_features: extraction failed: %s", e)
         return LLMFeatures(available=False)
