@@ -1,18 +1,18 @@
 """
-Metaculus community prediction collector.
+Metaculus question finder — search for related questions and report forecaster count.
 
-Uses the Metaculus API v3 (public, no auth required for read-only access).
-Returns (community_prediction: float, num_forecasters: int) for the best-matching
-active binary question, or (None, 0) when no suitable question is found.
+IMPORTANT: Metaculus intentionally hides community predictions via API — you only
+see the CP after making your own prediction (anti-anchoring design). As a result
+this collector returns (None, nr_forecasters) — the probability is always None,
+but nr_forecasters signals how much crowd attention the question has attracted.
 
-API v3 endpoints used:
-  GET /api/v3/questions/?search=...&status=open&type=binary&limit=20
+Use Manifold Markets (collector/manifold.py) for free crowd probability.
+Use Polymarket (collector/polymarket.py) for real-money probability.
 
-Community prediction extraction from v3 response:
-  q["aggregations"]["recency_weighted"]["history"][-1]["centers"][0]
-  Fallback: q["community_prediction"]  (v2-style field still present on some)
+Token required: set METACULUS_API_TOKEN in .env (free at metaculus.com).
+Without a token, the API returns HTTP 403.
 
-Min forecasters: 30 (questions with fewer are too noisy to use as market signal).
+API used: GET /api/posts/?search=...&forecast_type=binary&limit=20
 """
 from __future__ import annotations
 
@@ -26,20 +26,16 @@ from .base import graceful_collector
 
 logger = logging.getLogger(__name__)
 
-# v3 API — requires auth token (free account at metaculus.com)
-_BASE_URL_V3 = "https://www.metaculus.com/api/v3/questions/"
-_BASE_URL_V2 = "https://www.metaculus.com/api2/questions/"
+_BASE_URL = "https://www.metaculus.com/api/posts/"
 _TIMEOUT = aiohttp.ClientTimeout(total=12)
-_MIN_FORECASTERS = 30
+_MIN_FORECASTERS = 10   # min crowd size to consider the question relevant
 
 
 def _build_headers() -> dict:
-    """Build request headers, injecting Metaculus token from env if present."""
     import os
     h = {
         "User-Agent": "geopolitical-oracle/1.0 (research; github.com/alopezlamata-glitch)",
         "Accept": "application/json",
-        "Accept-Language": "en-US,en;q=0.9",
     }
     token = os.getenv("METACULUS_API_TOKEN", "").strip()
     if token:
@@ -47,7 +43,7 @@ def _build_headers() -> dict:
     return h
 
 
-def _extract_keywords(query: str, n: int = 8) -> str:
+def _extract_keywords(query: str, n: int = 6) -> str:
     stop = {
         "will", "the", "a", "an", "be", "is", "are", "was", "were", "in", "on",
         "at", "to", "for", "of", "and", "or", "by", "with", "this", "that",
@@ -60,129 +56,82 @@ def _extract_keywords(query: str, n: int = 8) -> str:
     return " ".join(filtered[:n])
 
 
-def _extract_prob_v3(q: dict) -> Optional[float]:
-    """Extract community prediction from API v3 question object."""
-    try:
-        agg = q.get("aggregations", {})
-        rw = agg.get("recency_weighted", {})
-        history = rw.get("history", [])
-        if history:
-            centers = history[-1].get("centers") or []
-            if centers:
-                return float(centers[0])
-    except Exception:
-        pass
-
-    # Fallback: try v2-style field sometimes present in v3 responses
-    try:
-        cp = q.get("community_prediction")
-        if isinstance(cp, dict):
-            v = cp.get("full", {}).get("q2") or cp.get("q2")
-            if v is not None:
-                return float(v)
-        if isinstance(cp, (int, float)):
-            return float(cp)
-    except Exception:
-        pass
-
-    # Last resort: prediction field
-    try:
-        pred = q.get("prediction")
-        if pred is not None:
-            return float(pred)
-    except Exception:
-        pass
-
-    return None
-
-
-def _extract_forecasters(q: dict) -> int:
-    for key in ("nr_forecasters", "number_of_forecasters", "forecasters_count"):
-        v = q.get(key)
-        if isinstance(v, int) and v > 0:
-            return v
-    return 0
-
-
-async def _try_fetch(
-    session: aiohttp.ClientSession, url: str, params: dict
-) -> Optional[list]:
-    """Attempt a single GET; return results list or None on HTTP error."""
-    headers = _build_headers()
-    try:
-        async with session.get(url, params=params, timeout=_TIMEOUT, headers=headers) as resp:
-            if resp.status == 403:
-                import os
-                if not os.getenv("METACULUS_API_TOKEN", "").strip():
-                    logger.warning(
-                        "metaculus: HTTP 403 — Metaculus now requires authentication. "
-                        "Get a free token at metaculus.com and set METACULUS_API_TOKEN in .env"
-                    )
-                else:
-                    logger.warning("metaculus: HTTP 403 — check your METACULUS_API_TOKEN")
-                return None
-            if resp.status in (404, 429):
-                logger.warning("metaculus: HTTP %d from %s", resp.status, url)
-                return None
-            resp.raise_for_status()
-            data = await resp.json(content_type=None)
-            return data.get("results", [])
-    except Exception as e:
-        logger.debug("metaculus: fetch error from %s: %s", url, e)
-        return None
-
-
 @graceful_collector("metaculus")
 async def collect_metaculus(
     session: aiohttp.ClientSession, query: str
 ) -> tuple[Optional[float], int]:
     """
-    Returns (community_prediction, num_forecasters) or (None, 0) if unavailable.
-    Tries API v3 first, falls back to v2 on 403/404.
+    Returns (None, nr_forecasters) — probability is never returned because
+    Metaculus intentionally hides CP via API (only visible after you forecast).
+
+    nr_forecasters > 0 signals that a relevant, active question exists on
+    Metaculus, providing a quality/attention signal even without a probability.
+
+    The pipeline uses Manifold Markets as fallback probability source.
     """
+    import os
+    if not os.getenv("METACULUS_API_TOKEN", "").strip():
+        logger.debug(
+            "metaculus: no METACULUS_API_TOKEN in .env — skipping "
+            "(get a free token at metaculus.com)"
+        )
+        return None, 0
+
     keywords = _extract_keywords(query)
     if not keywords:
         return None, 0
 
-    # ── API v3 attempt ─────────────────────────────────────────────────────
-    params_v3 = {
+    headers = _build_headers()
+    params = {
         "search": keywords,
-        "status": "open",
-        "type": "binary",
+        "forecast_type": "binary",
         "limit": "20",
+        "order_by": "-activity",
     }
-    results = await _try_fetch(session, _BASE_URL_V3, params_v3)
 
-    # ── API v2 fallback ─────────────────────────────────────────────────────
-    if results is None:
-        params_v2 = {
-            "search": keywords,
-            "status": "active",
-            "type": "forecast",
-            "limit": "20",
-        }
-        results = await _try_fetch(session, _BASE_URL_V2, params_v2)
-
-    if not results:
-        logger.debug("metaculus: no results for query: %r", keywords[:60])
+    try:
+        async with session.get(
+            _BASE_URL, params=params, timeout=_TIMEOUT, headers=headers
+        ) as resp:
+            if resp.status == 403:
+                logger.warning(
+                    "metaculus: HTTP 403 — check your METACULUS_API_TOKEN in .env"
+                )
+                return None, 0
+            if resp.status in (404, 429):
+                logger.warning("metaculus: HTTP %d", resp.status)
+                return None, 0
+            resp.raise_for_status()
+            data = await resp.json(content_type=None)
+    except Exception as e:
+        logger.debug("metaculus: request failed: %s", e)
         return None, 0
 
-    # ── Find best question ───────────────────────────────────────────────────
-    for q in results:
-        forecasters = _extract_forecasters(q)
-        if forecasters < _MIN_FORECASTERS:
-            continue
+    results = data.get("results", [])
+    if not results:
+        logger.debug("metaculus: no results for keywords: %r", keywords)
+        return None, 0
 
-        p = _extract_prob_v3(q)
-        if p is None or not (0.01 < p < 0.99):
+    # Find the most-forecasted relevant question
+    best_forecasters = 0
+    best_title = ""
+    for post in results:
+        nf = post.get("nr_forecasters") or 0
+        if nf < _MIN_FORECASTERS:
             continue
+        if nf > best_forecasters:
+            best_forecasters = nf
+            best_title = post.get("title", "")[:60]
 
-        title = q.get("title", "")[:80]
+    if best_forecasters > 0:
         logger.info(
-            "metaculus: p=%.3f (%d forecasters) — %r",
-            p, forecasters, title,
+            "metaculus: found related question (%d forecasters) — %r "
+            "[note: CP hidden by API design; using Manifold for probability]",
+            best_forecasters, best_title,
         )
-        return p, forecasters
+        # Return None probability — CP is intentionally hidden
+        # nr_forecasters is still a useful attention/quality signal
+        return None, best_forecasters
 
-    logger.debug("metaculus: no question met quality threshold (>=30 forecasters)")
+    logger.debug("metaculus: no question met ≥%d forecasters threshold", _MIN_FORECASTERS)
     return None, 0

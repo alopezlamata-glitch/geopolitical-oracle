@@ -99,20 +99,23 @@ async def _collect_all(question: str, country: str | None) -> tuple[list, dict, 
         wiki_context = ""
 
     # Unpack market quality metadata
-    # Metaculus: real data if token present, else (None, 0)
+    # Metaculus: returns (None, nr_forecasters) — API intentionally hides CP
     if isinstance(meta_result, tuple):
-        metaculus_p = meta_result[0]
+        metaculus_p = meta_result[0]              # always None by design
         metaculus_forecasters = meta_result[1] if len(meta_result) > 1 else None
     else:
         metaculus_p, metaculus_forecasters = None, None
 
-    # Manifold: fallback when Metaculus unavailable
-    if metaculus_p is None and isinstance(manifold_result, tuple) and manifold_result[0] is not None:
+    # Manifold: always try as probability source (Metaculus never provides p)
+    # Keep Metaculus forecaster count as attention signal even when using Manifold p
+    if isinstance(manifold_result, tuple) and manifold_result[0] is not None:
         manifold_p, manifold_bettors = manifold_result[0], manifold_result[1]
         metaculus_p = manifold_p
-        metaculus_forecasters = manifold_bettors
+        # Prefer Metaculus forecaster count (larger, more calibrated crowd) if available
+        if not metaculus_forecasters:
+            metaculus_forecasters = manifold_bettors
         logger.info(
-            "manifold: using as Metaculus fallback — p=%.3f (%d bettors)",
+            "manifold: p=%.3f (%d bettors) — used as crowd probability source",
             manifold_p, manifold_bettors,
         )
 
