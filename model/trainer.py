@@ -79,12 +79,28 @@ def load_training_data() -> tuple[list[dict], list[int]]:
     Load labeled training examples.
 
     Primary source: DuckDB lakehouse (`training_ready_snapshots`).
-    Legacy fallback: `data/training/*.json` only when lakehouse path errors.
+    Fallback: `data/training/*.json` when lakehouse has < MIN_EXAMPLES
+              (covers ICEWS historical examples generated offline).
     """
     try:
         X, y = load_training_data_from_lakehouse()
-        logger.info("trainer: loaded %d examples from lakehouse", len(X))
-        return X, y
+        logger.info("trainer: lakehouse has %d examples", len(X))
+        if len(X) >= _MIN_EXAMPLES:
+            return X, y
+        # Fall through to legacy when lakehouse is not yet populated
+        logger.info(
+            "trainer: lakehouse has %d examples (< %d minimum) — "
+            "merging with legacy ICEWS training set",
+            len(X), _MIN_EXAMPLES,
+        )
+        legacy_X, legacy_y = load_training_data_legacy()
+        merged_X = legacy_X + X
+        merged_y = legacy_y + y
+        logger.info(
+            "trainer: total %d examples (%d legacy + %d lakehouse)",
+            len(merged_X), len(legacy_X), len(X),
+        )
+        return merged_X, merged_y
     except Exception as e:
         logger.warning("trainer: lakehouse unavailable, falling back to legacy JSON: %s", e)
         return load_training_data_legacy()
