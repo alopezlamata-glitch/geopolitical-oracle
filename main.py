@@ -44,37 +44,45 @@ for _log in ("aiohttp", "urllib3", "feedparser", "shap"):
 
 async def _collect_all(question: str, country: str | None) -> tuple[list, dict, str]:
     """
-    Run all collectors concurrently (6 in parallel including Wikipedia).
+    Run all collectors concurrently (7 in parallel).
 
     Returns:
         (raw_events, market_meta, wiki_context) where:
-          - raw_events     : list[RawEvent] from GDELT + RSS + ACLED
-          - market_meta    : dict with Metaculus/Polymarket quality signals
-          - wiki_context   : str  Wikipedia article extract (may be "")
+          - raw_events   : list[RawEvent] from GDELT + RSS + ACLED
+          - market_meta  : dict with forecasting market quality signals
+          - wiki_context : str  Wikipedia article extract (may be "")
+
+    Market priority:
+      1. Polymarket (real-money, highest signal quality)
+      2. Metaculus (requires METACULUS_API_TOKEN in .env)
+      3. Manifold Markets (free, no auth, fallback when Metaculus unavailable)
     """
     from collector import (
         collect_gdelt, collect_rss, collect_metaculus,
         collect_polymarket, collect_acled, collect_wikipedia,
+        collect_manifold,
     )
 
     # No session-level timeout — each collector manages its own timeout
     async with aiohttp.ClientSession() as session:
         results = await asyncio.gather(
-            collect_gdelt(session, question),
-            collect_rss(session, question),
-            collect_metaculus(session, question),
-            collect_polymarket(session, question),
-            collect_acled(session, question, country=country),
-            collect_wikipedia(session, question),
+            collect_gdelt(session, question),       # 0
+            collect_rss(session, question),         # 1
+            collect_metaculus(session, question),   # 2
+            collect_polymarket(session, question),  # 3
+            collect_acled(session, question, country=country),  # 4
+            collect_wikipedia(session, question),   # 5
+            collect_manifold(session, question),    # 6
             return_exceptions=True,
         )
 
-    gdelt_events = results[0] if not isinstance(results[0], Exception) else []
-    rss_events   = results[1] if not isinstance(results[1], Exception) else []
-    meta_result  = results[2] if not isinstance(results[2], Exception) else (None, 0)
-    poly_result  = results[3] if not isinstance(results[3], Exception) else (None, 0.0, 0.0)
-    acled_events = results[4] if not isinstance(results[4], Exception) else []
-    wiki_result  = results[5] if not isinstance(results[5], Exception) else None
+    gdelt_events   = results[0] if not isinstance(results[0], Exception) else []
+    rss_events     = results[1] if not isinstance(results[1], Exception) else []
+    meta_result    = results[2] if not isinstance(results[2], Exception) else (None, 0)
+    poly_result    = results[3] if not isinstance(results[3], Exception) else (None, 0.0, 0.0)
+    acled_events   = results[4] if not isinstance(results[4], Exception) else []
+    wiki_result    = results[5] if not isinstance(results[5], Exception) else None
+    manifold_result= results[6] if not isinstance(results[6], Exception) else (None, 0)
 
     for i, r in enumerate(results):
         if isinstance(r, Exception):
@@ -91,23 +99,36 @@ async def _collect_all(question: str, country: str | None) -> tuple[list, dict, 
         wiki_context = ""
 
     # Unpack market quality metadata
+    # Metaculus: real data if token present, else (None, 0)
     if isinstance(meta_result, tuple):
-        metaculus_p, metaculus_forecasters = meta_result[0], (meta_result[1] if len(meta_result) > 1 else None)
+        metaculus_p = meta_result[0]
+        metaculus_forecasters = meta_result[1] if len(meta_result) > 1 else None
     else:
         metaculus_p, metaculus_forecasters = None, None
 
+    # Manifold: fallback when Metaculus unavailable
+    if metaculus_p is None and isinstance(manifold_result, tuple) and manifold_result[0] is not None:
+        manifold_p, manifold_bettors = manifold_result[0], manifold_result[1]
+        metaculus_p = manifold_p
+        metaculus_forecasters = manifold_bettors
+        logger.info(
+            "manifold: using as Metaculus fallback — p=%.3f (%d bettors)",
+            manifold_p, manifold_bettors,
+        )
+
+    # Polymarket
     if isinstance(poly_result, tuple):
-        polymarket_p    = poly_result[0]
-        polymarket_vol  = poly_result[1] if len(poly_result) > 1 else None
+        polymarket_p      = poly_result[0]
+        polymarket_vol    = poly_result[1] if len(poly_result) > 1 else None
         polymarket_mscore = poly_result[2] if len(poly_result) > 2 else None
     else:
         polymarket_p, polymarket_vol, polymarket_mscore = None, None, None
 
     market_meta = {
-        "metaculus_p": metaculus_p,
+        "metaculus_p":          metaculus_p,
         "metaculus_forecasters": int(metaculus_forecasters) if metaculus_forecasters else None,
-        "polymarket_p": polymarket_p,
-        "polymarket_volume": float(polymarket_vol) if polymarket_vol else None,
+        "polymarket_p":         polymarket_p,
+        "polymarket_volume":    float(polymarket_vol) if polymarket_vol else None,
         "polymarket_match_score": float(polymarket_mscore) if polymarket_mscore else None,
     }
 

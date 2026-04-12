@@ -14,6 +14,8 @@ logger = logging.getLogger(__name__)
 
 _BASE_URL = "https://api.gdeltproject.org/api/v2/doc/doc"
 _TIMEOUT = aiohttp.ClientTimeout(total=20)
+_HEADERS = {"User-Agent": "geopolitical-oracle/1.0 (research; github.com/alopezlamata-glitch)"}
+_CACHE_MINUTES = 120   # 2-hour TTL — GDELT rate-limits at ~30 req/hour
 
 _STOP_WORDS = {
     "will", "the", "a", "an", "be", "is", "are", "was", "were", "in", "on",
@@ -98,7 +100,7 @@ async def collect_gdelt(session: aiohttp.ClientSession, query: str) -> list[RawE
         return []
 
     cache_key = "gdelt_" + re.sub(r"\s+", "_", keywords)[:40]
-    cached = load_cached(cache_key)
+    cached = load_cached(cache_key, max_age_minutes=_CACHE_MINUTES)
     if cached is not None:
         logger.debug("gdelt: cache hit (%d events)", len(cached))
         return cached
@@ -109,18 +111,38 @@ async def collect_gdelt(session: aiohttp.ClientSession, query: str) -> list[RawE
     params = {
         "query": keywords,
         "mode": "artlist",
-        "maxrecords": "50",
+        "maxrecords": "75",
         "startdatetime": _gdelt_datetime(start),
         "enddatetime": _gdelt_datetime(now),
         "format": "json",
     }
 
-    async with session.get(_BASE_URL, params=params, timeout=_TIMEOUT) as resp:
-        if resp.status == 429:
-            logger.warning("gdelt: rate-limited (429)")
-            return []
-        resp.raise_for_status()
-        raw = await resp.text(encoding="utf-8", errors="replace")
+    # Two attempts: immediate + 3s retry on 429
+    raw = None
+    for attempt in range(2):
+        async with session.get(
+            _BASE_URL, params=params, timeout=_TIMEOUT, headers=_HEADERS
+        ) as resp:
+            if resp.status == 429:
+                stale = load_cached(cache_key, max_age_minutes=_CACHE_MINUTES * 6, allow_stale=True)
+                if stale:
+                    logger.warning(
+                        "gdelt: rate-limited (429) — serving %d stale events (attempt %d)",
+                        len(stale), attempt + 1,
+                    )
+                    return stale
+                if attempt == 0:
+                    logger.warning("gdelt: rate-limited (429) — retrying in 3s")
+                    await asyncio.sleep(3)
+                    continue
+                logger.warning("gdelt: rate-limited (429) — no cache, giving up")
+                return []
+            resp.raise_for_status()
+            raw = await resp.text(encoding="utf-8", errors="replace")
+            break
+
+    if raw is None:
+        return []
 
     if not raw or raw.lstrip().startswith("<") or raw.lstrip().startswith("Please"):
         logger.debug("gdelt: non-JSON response: %s", raw[:80])

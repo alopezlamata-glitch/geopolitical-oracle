@@ -61,7 +61,20 @@ def save_raw_events(source: str, events: list[RawEvent]) -> None:
             path.write_text(json.dumps(ev.to_dict(), ensure_ascii=False, indent=2))
 
 
-def load_cached(cache_key: str) -> Optional[list[RawEvent]]:
+def load_cached(
+    cache_key: str,
+    max_age_minutes: int = 30,
+    allow_stale: bool = False,
+) -> Optional[list[RawEvent]]:
+    """
+    Load events from the TTL cache.
+
+    Args:
+        cache_key       : key used when save_cached() was called
+        max_age_minutes : reject entries older than this (default 30 min)
+        allow_stale     : if True and the entry is expired, still return it
+                          (used for rate-limit fallback — old data > no data)
+    """
     path = _RAW_CACHE_DIR / f"{cache_key}.json"
     if not path.exists():
         return None
@@ -69,9 +82,15 @@ def load_cached(cache_key: str) -> Optional[list[RawEvent]]:
         data = json.loads(path.read_text())
         ts = datetime.fromisoformat(data["timestamp"])
         age_minutes = (datetime.now(timezone.utc) - ts).total_seconds() / 60
-        if age_minutes > 30:
+        events = [RawEvent.from_dict(e) for e in data["events"]]
+        if age_minutes > max_age_minutes:
+            if allow_stale and events:
+                logger.debug(
+                    "cache: serving stale entry for %r (%.0f min old)", cache_key, age_minutes
+                )
+                return events
             return None
-        return [RawEvent.from_dict(e) for e in data["events"]]
+        return events
     except Exception:
         return None
 
