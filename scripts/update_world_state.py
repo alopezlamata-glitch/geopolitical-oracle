@@ -38,6 +38,12 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from dotenv import load_dotenv
 load_dotenv()
 
+from features.event_aggregations import (
+    partition_windows,
+    collect_unique_sources,
+    mean_attr,
+)
+
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
@@ -208,23 +214,16 @@ def compute_features(
     All features are normalized to [0, 1] or unbounded floats where noted.
     """
     now = datetime.now(timezone.utc)
-    cutoff_7d  = now - timedelta(days=7)
-    cutoff_30d = now - timedelta(days=30)
 
-    # ── Partition events by recency ───────────────────────────────────────────
-    events_7d: list  = []
-    events_30d: list = []
-
-    for ev in raw_events:
-        ts = getattr(ev, "occurred_at", None) or getattr(ev, "published_at", None)
-        if ts is None:
-            continue
-        if hasattr(ts, "tzinfo") and ts.tzinfo is None:
-            ts = ts.replace(tzinfo=timezone.utc)
-        if ts >= cutoff_7d:
-            events_7d.append(ev)
-        if ts >= cutoff_30d:
-            events_30d.append(ev)
+    # ── Partition events by recency — shared primitive ────────────────────────
+    # Uses occurred_at with published_at fallback; handles naive timestamps.
+    _windows = partition_windows(
+        raw_events, now,
+        windows_days=(7, 30),
+        get_ts=lambda e: getattr(e, "occurred_at", None) or getattr(e, "published_at", None),
+    )
+    events_7d  = _windows[7]
+    events_30d = _windows[30]
 
     # ── Count by category ─────────────────────────────────────────────────────
     def _counts(evts: list) -> dict[str, int]:
@@ -285,18 +284,9 @@ def compute_features(
     pro_accel     = pro_7d  / max(0.5, weekly_rate_30d_pro)
     overall_accel = total_7d / max(0.5, overall_30d_rate)
 
-    # Source diversity
-    # source_domains (CanonicalEvent) or fallback to .source (RawEvent)
-    sources_7d: set[str] = set()
-    for ev in events_7d:
-        domains = getattr(ev, "source_domains", None)
-        if domains:
-            sources_7d.update(domains)
-        else:
-            sources_7d.add(getattr(ev, "source", "unknown"))
-    avg_ind = float(sum(
-        getattr(ev, "independent_sources", 1) for ev in events_7d
-    ) / max(1, len(events_7d)))
+    # Source diversity — shared primitives (with .source fallback for raw events)
+    sources_7d = collect_unique_sources(events_7d)
+    avg_ind    = mean_attr(events_7d, "independent_sources", default=1.0, cap=5.0)
 
     # ── Escalation index ─────────────────────────────────────────────────────
     # > 0 means escalating, < 0 means de-escalating
