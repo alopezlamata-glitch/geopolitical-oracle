@@ -22,6 +22,11 @@ from predictor.market_prior import (
 
 logger = logging.getLogger(__name__)
 
+# Models that use XGBoost (trained, feature-vector based)
+_XGB_MODEL_IDS = {"xgb_conflict_v3"}
+# Models that use the statistical base-rate predictor (non-conflict domains)
+_BASE_RATE_MODEL_IDS = {"ollama_reasoning_v1", "base_rate_v1"}
+
 
 def _quantile_at(scores: list[float], coverage: float) -> float:
     """Split-conformal quantile: ceil((n+1)*(1-alpha))-th order statistic."""
@@ -188,4 +193,139 @@ def predict(
         "n_market_signals": blend.n_signals,
         # Backward-compat alias (old code checked this key)
         "market_override": blend.gate_passed and blend.n_signals > 0,
+        "predictor": "xgb_conflict_v3",
     }
+
+
+def predict_for_domain(
+    matched_model: str,
+    features: dict[str, float],
+    event_family: str,
+    question: str,
+    headlines: list[str],
+    deadline: Optional[datetime] = None,
+    wiki_context: str = "",
+    metaculus_p: Optional[float] = None,
+    polymarket_p: Optional[float] = None,
+    metaculus_forecasters: Optional[int] = None,
+    polymarket_volume: Optional[float] = None,
+    polymarket_match_score: Optional[float] = None,
+    as_of_time: Optional[datetime] = None,
+    country: Optional[str] = None,
+) -> dict:
+    """
+    Model router: dispatches to the right predictor based on matched_model.
+
+    - xgb_conflict_v3    → XGBoost predict() (existing, trained)
+    - ollama_reasoning_v1 → Ollama reasoning predictor (new domains)
+    - unknown            → XGBoost fallback with untrained warning
+
+    All paths return the same dict schema for downstream compatibility.
+    """
+    if matched_model in _BASE_RATE_MODEL_IDS:
+        from predictor.base_rate_predictor import predict_base_rate
+        # Extract predicate and horizon from features dict (set by caller)
+        predicate = features.get("_predicate", "unknown")
+        if isinstance(predicate, float):
+            predicate = "unknown"
+        horizon_days: Optional[int] = None
+        if deadline is not None and as_of_time is not None:
+            ref_date = as_of_time if isinstance(as_of_time, datetime) else datetime.now(timezone.utc)
+            delta = deadline - ref_date
+            horizon_days = max(0, delta.days)
+        elif deadline is not None:
+            from datetime import datetime as _dt, timezone as _tz
+            delta = deadline - _dt.now(_tz.utc)
+            horizon_days = max(0, delta.days)
+        return predict_base_rate(
+            features=features,
+            predicate=str(predicate),
+            event_family=event_family,
+            horizon_days=horizon_days,
+            metaculus_p=metaculus_p,
+            polymarket_p=polymarket_p,
+            metaculus_forecasters=metaculus_forecasters,
+            polymarket_volume=polymarket_volume,
+            polymarket_match_score=polymarket_match_score,
+            as_of_time=as_of_time,
+        )
+
+    # Default: XGBoost path (conflict domain or unknown model)
+    if matched_model not in _XGB_MODEL_IDS:
+        logger.warning("predict_for_domain: unknown model_id '%s' — using XGBoost fallback", matched_model)
+
+    result = predict(
+        features=features,
+        metaculus_p=metaculus_p,
+        polymarket_p=polymarket_p,
+        metaculus_forecasters=metaculus_forecasters,
+        polymarket_volume=polymarket_volume,
+        polymarket_match_score=polymarket_match_score,
+        as_of_time=as_of_time,
+    )
+
+    # ── World model trajectory enrichment (Phase 2) ────────────────────────────
+    # If a world state + VAR trajectory is available for this country, compute
+    # trajectory-based probability and use it to refine the CI bounds.
+    # The point estimate (calibrated_prob) stays model-driven; trajectory shifts CI.
+    if country and deadline is not None:
+        _enrich_with_trajectory(result, country, event_family, features, deadline, as_of_time)
+
+    return result
+
+
+def _enrich_with_trajectory(
+    result: dict,
+    country: str,
+    event_family: str,
+    features: dict,
+    deadline: datetime,
+    as_of_time: Optional[datetime],
+) -> None:
+    """
+    Non-fatal: enriches result dict in-place with trajectory metadata.
+    Does NOT change calibrated_prob — only adds trajectory context.
+    """
+    try:
+        from world_state.trajectory import marginalize_with_uncertainty, predict_trajectory
+
+        ref = as_of_time or datetime.now(timezone.utc)
+        horizon_days = max(1, (deadline - ref).days)
+
+        traj_result = marginalize_with_uncertainty(
+            entity_name=country,
+            predicate=str(features.get("_predicate", "unknown")),
+            event_family=event_family,
+            horizon_days=horizon_days,
+            n_samples=100,
+        )
+
+        if not traj_result:
+            return
+
+        p_traj = traj_result.get("p_trajectory")
+        if p_traj is None:
+            return
+
+        p_current = result.get("calibrated_prob", 0.5)
+
+        # Blend CI: trajectory narrows/widens based on consistency with current estimate
+        consistency = 1.0 - abs(p_traj - p_current)   # 1.0 = perfectly aligned
+
+        result["trajectory_p"]          = p_traj
+        result["trajectory_ci_lo"]      = traj_result.get("p_lo")
+        result["trajectory_ci_hi"]      = traj_result.get("p_hi")
+        result["trajectory_ci_method"]  = traj_result.get("trajectory_ci_method", "var")
+        result["trajectory_risk_profile"] = traj_result.get("risk_profile")
+        result["trajectory_consistency"] = round(consistency, 3)
+        result["trajectory_n_samples"]  = traj_result.get("n_samples", 0)
+
+        logger.info(
+            "trajectory[%s/%s]: p_traj=%.3f  p_current=%.3f  consistency=%.2f  "
+            "horizon=%dd  risk=%s",
+            country, event_family,
+            p_traj, p_current, consistency,
+            horizon_days, traj_result.get("risk_profile", "?"),
+        )
+    except Exception as e:
+        logger.debug("trajectory enrichment skipped: %s", e)

@@ -343,6 +343,7 @@ def cmd_predict(args) -> None:
         polymarket_volume=market_meta["polymarket_volume"],
         polymarket_match_score=market_meta["polymarket_match_score"],
         as_of_time=as_of_time,
+        country=country,
     )
     if prediction.get("predictor") == "ollama_reasoning_v1":
         attr = prediction.get("attribution", {})
@@ -708,6 +709,16 @@ def main():
     p_ws.add_argument("--entity", "-e", metavar="NAME",
                       help="Show history for a specific entity")
     p_ws.set_defaults(func=cmd_world_state)
+
+    p_fit = sub.add_parser(
+        "fit-transition-model",
+        help="Fit VAR transition models from world state history",
+    )
+    p_fit.add_argument("--entity", "-e", nargs="+", metavar="NAME",
+                       help="Only fit for these entities")
+    p_fit.set_defaults(func=lambda a: __import__(
+        "scripts.fit_transition_model", fromlist=["run"]
+    ).run(entity_names=a.entity))
 
     args = parser.parse_args()
     args.func(args)
