@@ -291,84 +291,70 @@ def build_features(
     for ev in events_30d:
         _add_prov("event_velocity_7d", ev.event_id, 0.5)
 
-    # ── Structural country features (no events, static lookup) ───────────────
-    # These are the same regardless of the query window.
-    # country is passed from main.py; falls back to world medians if unknown.
+    # ── Structural country features (static lookup, world state preferred) ─────
+    # world_state/api.py::build_entity_context() is the canonical source.
+    # country_data.py is the fallback for countries with no world state.
+    ctx: dict = {}
+    if country:
+        try:
+            from world_state.api import build_entity_context, world_state_weight
+            ctx = build_entity_context(country)
+        except Exception as e:
+            logger.debug("build_entity_context skipped: %s", e)
 
-    struct = get_country_features(country or "")
-    feat.update(struct)
+    # Structural features: prefer world_state columns, fall back to country_data.py
+    _STRUCT = ("country_conflict_baserate", "country_polity_norm", "country_mil_spending_norm")
+    struct_from_ctx = {k: ctx[k] for k in _STRUCT if k in ctx and ctx[k] != 0.0}
+    if len(struct_from_ctx) < len(_STRUCT):
+        fallback = get_country_features(country or "")
+        for k in _STRUCT:
+            if k not in struct_from_ctx:
+                struct_from_ctx[k] = fallback.get(k, 0.0)
+    feat.update(struct_from_ctx)
 
-    # Provenance: no events feed these (they're static), but record the country
     prov["country_conflict_baserate"] = []
     prov["country_polity_norm"] = []
     prov["country_mil_spending_norm"] = []
 
-    # ── World state enrichment (Phase 1 world model) ─────────────────────────
-    # If a pre-computed world state exists for this country (from the daily
-    # update_world_state.py run), use it to enrich features:
-    #   - Features with no signal from current events → filled from world state
-    #   - Features with signal from current events → blended (fresh=0.7, ws=0.3)
-    # World state captures EMA-smoothed, causally-propagated history not visible
-    # in the per-question event window.
-    if country:
-        try:
-            from world_state.reader import get_world_state
-            ws = get_world_state(country)
-            if ws is not None:
-                staleness = ws.get("_world_state_staleness_days", 99)
-                # Only use if not too stale (≤2 days for dynamic features)
-                ws_weight = 0.3 if staleness <= 2 else 0.15
-                n_enriched = 0
-                for fname in _FEATURE_NAMES:
-                    ws_val = ws.get(fname)
-                    if ws_val is None:
-                        continue
-                    current = feat.get(fname, 0.0)
-                    if current == 0.0:
-                        # No fresh signal — use world state directly
-                        feat[fname] = float(ws_val)
-                        n_enriched += 1
-                    else:
-                        # Fresh signal exists — blend, prioritizing fresh events
-                        feat[fname] = round((1.0 - ws_weight) * current + ws_weight * float(ws_val), 6)
-                if n_enriched:
-                    logger.info(
-                        "world_state: enriched %d zero-features from %s state (stale=%dd, ws_weight=%.2f)",
-                        n_enriched, country, staleness, ws_weight,
-                    )
-        except Exception as e:
-            logger.debug("world_state enrichment skipped: %s", e)
+    # ── World model enrichment (Phases 1 + 3 + 4, single call) ──────────────
+    # ctx already contains: world_state features, relation features,
+    # and causal-neighbour context (neighbor_* keys) — all merged.
+    #
+    # Blend strategy (world_state_weight is staleness-aware):
+    #   fresh == 0  → use ctx value directly (world model fills the gap)
+    #   fresh != 0  → blend: (1-ws_w)*fresh + ws_w*ctx
+    #
+    # Neighbour keys (neighbor_*) and relation keys are non-overlapping with
+    # _FEATURE_NAMES so they pass through without blending.
+    if ctx:
+        ws_w = world_state_weight(ctx) if country else 0.3
+        staleness = ctx.get("_world_state_staleness_days", 99)
+        n_enriched = n_blended = 0
 
-    # ── Neighbor context injection (Phase 3 world model) ─────────────────────
-    # For each causal neighbor of this entity, inject their world state
-    # source features as prefixed neighbor_* keys. These are informational
-    # (not in _FEATURE_NAMES) and used by base_rate_predictor + coherence.
-    if country:
-        try:
-            from world_state.entity_graph import get_neighbor_context
-            neighbor_ctx = get_neighbor_context(country)
-            if neighbor_ctx:
-                # Store non-private keys as features (base_rate_predictor reads them)
-                for k, v in neighbor_ctx.items():
-                    if not k.startswith("_"):
-                        feat[k] = v
-        except Exception as e:
-            logger.debug("neighbor context injection skipped: %s", e)
+        for fname in _FEATURE_NAMES:
+            ctx_val = ctx.get(fname)
+            if ctx_val is None:
+                continue
+            current = feat.get(fname, 0.0)
+            if current == 0.0:
+                feat[fname] = float(ctx_val)
+                n_enriched += 1
+            else:
+                feat[fname] = round((1.0 - ws_w) * current + ws_w * float(ctx_val), 6)
+                n_blended += 1
 
-    # ── Entity relation features (Phase 4 world model) ───────────────────────
-    # Inject tenure, conflict status, sanctions, and investigation flags
-    # derived from the persistent entity_relations_temporal graph.
-    # These are non-event features: they capture structural/role state.
-    if country:
-        try:
-            from world_state.relation_reader import get_country_relation_features
-            rel_feats = get_country_relation_features(country)
-            if rel_feats:
-                for k, v in rel_feats.items():
-                    if feat.get(k, 0.0) == 0.0:  # don't overwrite event-derived signals
-                        feat[k] = v
-        except Exception as e:
-            logger.debug("relation features skipped: %s", e)
+        # Neighbour + relation keys (informational, not in _FEATURE_NAMES)
+        for k, v in ctx.items():
+            if k.startswith("_") or k in _FEATURE_NAMES or k in _STRUCT:
+                continue
+            if feat.get(k, 0.0) == 0.0:
+                feat[k] = v
+
+        if n_enriched or n_blended:
+            logger.info(
+                "world_model: %s  filled=%d blended=%d  staleness=%sd ws_w=%.2f",
+                country, n_enriched, n_blended, staleness, ws_w,
+            )
 
     # ── LLM feature extraction (v4, non-fatal) ────────────────────────────────
     # These 6 features are NOT in _FEATURE_NAMES so the v3 XGBoost ignores them.

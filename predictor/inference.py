@@ -353,6 +353,27 @@ def _enrich_with_trajectory(
         if traj_result.get("shock_signals"):
             result["shock_signals"] = traj_result["shock_signals"]
 
+        # ── Trajectory influence on calibrated_prob ───────────────────────────
+        # Only when: real VAR fitted (not random walk), consistency > 0.7,
+        # and enough samples. Weight kept small (0.15) — model stays primary.
+        ci_method = traj_result.get("trajectory_ci_method", "")
+        n_samples_traj = traj_result.get("n_samples", 0)
+        if (
+            "var_monte_carlo" in ci_method
+            and consistency > 0.7
+            and n_samples_traj >= 50
+        ):
+            _TRAJ_WEIGHT = 0.15
+            blended = (1.0 - _TRAJ_WEIGHT) * p_current + _TRAJ_WEIGHT * p_traj
+            blended = round(max(0.01, min(0.99, blended)), 4)
+            result["p_before_trajectory"] = p_current
+            result["calibrated_prob"]     = blended
+            result["answer"]              = "YES" if blended >= 0.5 else "NO"
+            logger.info(
+                "trajectory blend[%s]: %.3f → %.3f (traj=%.3f consistency=%.2f)",
+                country, p_current, blended, p_traj, consistency,
+            )
+
         # ── Multi-horizon sub-forecasts ────────────────────────────────────────
         for short_h in (7, 30):
             if horizon_days > short_h:
