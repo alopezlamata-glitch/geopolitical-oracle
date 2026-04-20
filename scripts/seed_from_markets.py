@@ -259,7 +259,7 @@ def _write_to_db(records: list[dict], dry_run: bool = False) -> tuple[int, int]:
                 [
                     res_id, q_id, rec["outcome"],
                     rec["resolved_at"], rec["deadline"].date(),
-                    "manifold",
+                    rec.get("source", "manifold"),
                     json.dumps({"market_id": rec["market_id"], "volume": rec["volume"], "traders": rec["traders"]}),
                     1.0, False, "seed_from_markets",
                 ],
@@ -311,27 +311,160 @@ def _write_to_db(records: list[dict], dry_run: bool = False) -> tuple[int, int]:
     return n_questions, n_predictions
 
 
+_METACULUS_BASE = "https://www.metaculus.com/api2"
+
+
+async def _fetch_metaculus_resolved(
+    session, limit: int = 200, token: str = ""
+) -> list[dict]:
+    """
+    Fetch resolved binary questions from Metaculus v2 API.
+    For resolved questions, community_prediction.full.q2 is visible even without auth.
+    Requires METACULUS_API_TOKEN for full access; partial data available without.
+    """
+    import aiohttp
+    headers = {"User-Agent": "geopolitical-oracle/1.0 (research)", "Accept": "application/json"}
+    if token:
+        headers["Authorization"] = f"Token {token}"
+
+    url = f"{_METACULUS_BASE}/questions/"
+    params = {
+        "type":        "binary",
+        "status":      "resolved",
+        "order_by":    "-resolve_time",
+        "limit":       min(limit, 100),
+        "offset":      0,
+    }
+    results = []
+    try:
+        while len(results) < limit:
+            async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=20), headers=headers) as resp:
+                if resp.status == 403:
+                    logger.debug("metaculus: 403 (token required or rate limited)")
+                    break
+                if resp.status != 200:
+                    logger.warning("metaculus: HTTP %d", resp.status)
+                    break
+                data = await resp.json()
+                items = data.get("results", [])
+                if not items:
+                    break
+                results.extend(items)
+                logger.info("metaculus: fetched %d / %d", len(results), limit)
+                if not data.get("next"):
+                    break
+                params["offset"] = params["offset"] + len(items)
+    except Exception as e:
+        logger.warning("metaculus fetch failed: %s", e)
+
+    return results[:limit]
+
+
+def _parse_metaculus(m: dict) -> Optional[dict]:
+    """Parse a resolved Metaculus question into our canonical record format."""
+    resolution = m.get("resolution")
+    if resolution not in (1.0, 0.0, 1, 0):
+        return None
+
+    title = (m.get("title") or "").strip()
+    if not title or not _is_geopolitical(title):
+        return None
+
+    # Community prediction (visible for resolved questions)
+    cp = m.get("community_prediction") or {}
+    full = cp.get("full") or {}
+    prob = full.get("q2")  # median probability
+
+    # Fallback: use resolution itself as probability signal (at close)
+    if prob is None or not (0.01 <= float(prob) <= 0.99):
+        return None
+
+    outcome = 1 if int(resolution) == 1 else 0
+    close_time   = m.get("close_time")   or m.get("scheduled_resolve_time")
+    resolve_time = m.get("resolve_time") or close_time
+    created_time = m.get("created_time")
+
+    def _parse_dt(s) -> datetime:
+        if not s:
+            return datetime.now(timezone.utc)
+        try:
+            dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+            return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+        except Exception:
+            return datetime.now(timezone.utc)
+
+    deadline_dt  = _parse_dt(close_time)
+    resolved_dt  = _parse_dt(resolve_time)
+    created_dt   = _parse_dt(created_time)
+
+    return {
+        "title":       title,
+        "outcome":     outcome,
+        "probability": float(prob),
+        "deadline":    deadline_dt,
+        "resolved_at": resolved_dt,
+        "created_at":  created_dt,
+        "market_id":   f"metaculus_{m.get('id', '')}",
+        "country":     _infer_country(title),
+        "topic":       _infer_topic(title),
+        "volume":      float(m.get("activity") or m.get("effected_prediction_count") or 0),
+        "traders":     int(m.get("number_of_forecasters") or m.get("effected_prediction_count") or 0),
+        "created_ms":  int(created_dt.timestamp() * 1000),
+        "source":      "metaculus",
+    }
+
+
 def run(
     limit: int = 500,
     dry_run: bool = False,
     topic_filter: Optional[str] = None,
+    include_metaculus: bool = True,
 ) -> None:
+    import os
+    meta_token = os.getenv("METACULUS_API_TOKEN", "").strip()
+
     logger.info("fetching up to %d resolved Manifold markets...", limit)
-    raw = asyncio.run(_fetch_all(limit))
-    logger.info("downloaded %d markets, parsing...", len(raw))
+    raw_manifold = asyncio.run(_fetch_all(limit))
+    logger.info("downloaded %d Manifold markets, parsing...", len(raw_manifold))
 
     parsed = []
-    for m in raw:
+    for m in raw_manifold:
         rec = _parse_market(m)
         if rec is None:
             continue
         if topic_filter and rec["topic"] != topic_filter:
             continue
+        rec["source"] = "manifold"
         parsed.append(rec)
 
+    # Also fetch from Metaculus if token available
+    if include_metaculus:
+        if not meta_token:
+            logger.info("metaculus: no METACULUS_API_TOKEN — attempting public endpoint")
+
+        async def _fetch_meta():
+            import aiohttp
+            async with aiohttp.ClientSession() as session:
+                return await _fetch_metaculus_resolved(session, limit=min(limit, 300), token=meta_token)
+
+        raw_meta = asyncio.run(_fetch_meta())
+        logger.info("metaculus: downloaded %d resolved questions", len(raw_meta))
+        n_meta_parsed = 0
+        for m in raw_meta:
+            rec = _parse_metaculus(m)
+            if rec is None:
+                continue
+            if topic_filter and rec["topic"] != topic_filter:
+                continue
+            parsed.append(rec)
+            n_meta_parsed += 1
+        logger.info("metaculus: kept %d geopolitical binary questions", n_meta_parsed)
+
     logger.info(
-        "kept %d geopolitical binary markets out of %d",
-        len(parsed), len(raw),
+        "total qualifying markets: %d (manifold=%d metaculus=%d)",
+        len(parsed),
+        sum(1 for r in parsed if r.get("source") == "manifold"),
+        sum(1 for r in parsed if r.get("source") == "metaculus"),
     )
 
     if not parsed:
@@ -360,12 +493,14 @@ def run(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Seed resolved market predictions from Manifold")
+    parser = argparse.ArgumentParser(description="Seed resolved market predictions from Manifold + Metaculus")
     parser.add_argument("--limit",  type=int, default=500, help="Max markets to fetch")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--topic", choices=list(_TOPICS), help="Filter to one topic category")
+    parser.add_argument("--no-metaculus", action="store_true", help="Skip Metaculus (Manifold only)")
     args = parser.parse_args()
-    run(limit=args.limit, dry_run=args.dry_run, topic_filter=args.topic)
+    run(limit=args.limit, dry_run=args.dry_run, topic_filter=args.topic,
+        include_metaculus=not args.no_metaculus)
 
 
 if __name__ == "__main__":

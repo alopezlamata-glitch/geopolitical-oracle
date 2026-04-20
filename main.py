@@ -804,6 +804,26 @@ def main():
         "scripts.nightly_pipeline", fromlist=["run"]
     ).run(skip=set(a.skip), dry_run=a.dry_run))
 
+    p_feat = sub.add_parser(
+        "feature-analysis",
+        help="SHAP feature importance analysis — identify dead/key features",
+    )
+    p_feat.add_argument("--top",       type=int,   default=25)
+    p_feat.add_argument("--threshold", type=float, default=0.001)
+    p_feat.add_argument("--no-save",   action="store_true")
+    p_feat.set_defaults(func=lambda a: __import__(
+        "scripts.feature_analysis", fromlist=["run"]
+    ).run(top_n=a.top, dead_threshold=a.threshold, save=not a.no_save))
+
+    p_bt = sub.add_parser(
+        "backtest-causal",
+        help="Validate causal propagation links against resolved prediction history",
+    )
+    p_bt.add_argument("--no-save", action="store_true")
+    p_bt.set_defaults(func=lambda a: __import__(
+        "scripts.backtest_causal", fromlist=["run"]
+    ).run(save=not a.no_save))
+
     args = parser.parse_args()
     args.func(args)
 

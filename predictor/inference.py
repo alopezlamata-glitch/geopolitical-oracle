@@ -254,15 +254,43 @@ def predict_for_domain(
     if matched_model not in _XGB_MODEL_IDS:
         logger.warning("predict_for_domain: unknown model_id '%s' — using XGBoost fallback", matched_model)
 
-    result = predict(
-        features=features,
-        metaculus_p=metaculus_p,
-        polymarket_p=polymarket_p,
-        metaculus_forecasters=metaculus_forecasters,
-        polymarket_volume=polymarket_volume,
-        polymarket_match_score=polymarket_match_score,
-        as_of_time=as_of_time,
-    )
+    # ── Check if model is trained; if not, fall back to base-rate predictor ───
+    xgb_model, _ = load_model()
+    if xgb_model is None:
+        logger.info(
+            "predict_for_domain: XGBoost untrained — falling back to base_rate_predictor "
+            "for domain=%s", event_family,
+        )
+        predicate = str(features.get("_predicate", "military_escalation"))
+        horizon_days: Optional[int] = None
+        if deadline is not None:
+            ref = as_of_time or datetime.now(timezone.utc)
+            horizon_days = max(0, (deadline - ref).days)
+        from predictor.base_rate_predictor import predict_base_rate
+        result = predict_base_rate(
+            features=features,
+            predicate=predicate,
+            event_family=event_family,
+            horizon_days=horizon_days,
+            metaculus_p=metaculus_p,
+            polymarket_p=polymarket_p,
+            metaculus_forecasters=metaculus_forecasters,
+            polymarket_volume=polymarket_volume,
+            polymarket_match_score=polymarket_match_score,
+            as_of_time=as_of_time,
+        )
+        result["untrained"] = True
+        result["predictor"] = "base_rate_fallback_v1"
+    else:
+        result = predict(
+            features=features,
+            metaculus_p=metaculus_p,
+            polymarket_p=polymarket_p,
+            metaculus_forecasters=metaculus_forecasters,
+            polymarket_volume=polymarket_volume,
+            polymarket_match_score=polymarket_match_score,
+            as_of_time=as_of_time,
+        )
 
     # ── World model trajectory enrichment (Phase 2) ────────────────────────────
     # If a world state + VAR trajectory is available for this country, compute
