@@ -357,10 +357,41 @@ def cmd_predict(args) -> None:
     attribution = compute_shap_attribution(features, provenance, events_by_id)
     drift_flags = detect_drift(features)
 
+    # ── Step 5b: Coherence check (Phase 3 world model) ───────────────────────
+    coherence_output = ""
+    try:
+        from world_state.coherence import check, register, format_coherence_output
+        final_p = prediction.get("calibrated_prob", 0.5)
+        coherence_report = check(
+            entity_name=country or pq.subject or "",
+            predicate=pq.predicate or "unknown",
+            probability=final_p,
+            deadline=pq.deadline,
+            event_family=pq.event_family,
+        )
+        # Register so future predictions in this session can check against this
+        register(
+            entity_name=country or pq.subject or "",
+            predicate=pq.predicate or "unknown",
+            probability=final_p,
+            deadline=pq.deadline,
+        )
+        coherence_output = format_coherence_output(coherence_report)
+        prediction["coherence_score"] = coherence_report.consistency_score
+        prediction["coherence_violations"] = len(coherence_report.violations)
+        if coherence_report.implications:
+            prediction["causal_implications"] = coherence_report.implications[:5]
+    except Exception as e:
+        logger.debug("coherence check skipped: %s", e)
+
     # ── Step 6: Format + print ────────────────────────────────────────────────
     output = format_output(question, prediction, attribution, features, len(deduped), drift_flags)
     sys.stdout.buffer.write(("\n" + output + "\n").encode("utf-8", errors="replace"))
     sys.stdout.buffer.flush()
+    if coherence_output:
+        sys.stdout.buffer.write(coherence_output.encode("utf-8", errors="replace"))
+        sys.stdout.buffer.write(b"\n")
+        sys.stdout.buffer.flush()
 
     # ── Step 7: Save legacy JSON artifacts (secondary/debug only) ───────────────
     path = save_prediction(question, prediction, attribution, features, provenance, len(deduped))

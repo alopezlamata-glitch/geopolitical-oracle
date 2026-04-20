@@ -339,6 +339,22 @@ def build_features(
         except Exception as e:
             logger.debug("world_state enrichment skipped: %s", e)
 
+    # ── Neighbor context injection (Phase 3 world model) ─────────────────────
+    # For each causal neighbor of this entity, inject their world state
+    # source features as prefixed neighbor_* keys. These are informational
+    # (not in _FEATURE_NAMES) and used by base_rate_predictor + coherence.
+    if country:
+        try:
+            from world_state.entity_graph import get_neighbor_context
+            neighbor_ctx = get_neighbor_context(country)
+            if neighbor_ctx:
+                # Store non-private keys as features (base_rate_predictor reads them)
+                for k, v in neighbor_ctx.items():
+                    if not k.startswith("_"):
+                        feat[k] = v
+        except Exception as e:
+            logger.debug("neighbor context injection skipped: %s", e)
+
     # ── LLM feature extraction (v4, non-fatal) ────────────────────────────────
     # These 6 features are NOT in _FEATURE_NAMES so the v3 XGBoost ignores them.
     # They are stored alongside v3 features in feature_snapshots for v4 training.

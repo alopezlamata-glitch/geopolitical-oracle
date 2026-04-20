@@ -132,6 +132,27 @@ def format_output(
         for cf in cfs:
             lines.append(row(f"  Without '{cf['title'][:20]}': p → {cf['p_without']:.3f} (Δ={cf['delta']:+.3f})"))
 
+    # ── World model trajectory (Phase 2) ──────────────────────────────────────
+    traj_p = prediction.get("trajectory_p")
+    if traj_p is not None:
+        traj_lo = prediction.get("trajectory_ci_lo")
+        traj_hi = prediction.get("trajectory_ci_hi")
+        risk    = prediction.get("trajectory_risk_profile", "?")
+        cons    = prediction.get("trajectory_consistency", 1.0)
+        ci_str  = f"[{traj_lo:.2f}, {traj_hi:.2f}]" if traj_lo is not None else ""
+        lines.append(row(""))
+        lines.append(row("  WORLD MODEL TRAJECTORY"))
+        lines.append(row(f"  p(trajectory)   : {traj_p:.3f}  {ci_str}"))
+        lines.append(row(f"  Risk profile    : {risk}"))
+        lines.append(row(f"  Consistency     : {cons:.2f}  (1.0=aligned with trajectory)"))
+
+    # ── Coherence (Phase 3) ───────────────────────────────────────────────────
+    coh_score = prediction.get("coherence_score")
+    coh_viols = prediction.get("coherence_violations", 0)
+    if coh_score is not None and coh_score < 0.95:
+        lines.append(row(""))
+        lines.append(row(f"  COHERENCE: score={coh_score:.2f}  violations={coh_viols}"))
+
     lines.append("└" + "─" * W + "┘")
     return "\n".join(lines)
 
