@@ -751,6 +751,14 @@ def main():
         "scripts.fit_transition_model", fromlist=["run"]
     ).run(entity_names=a.entity))
 
+    p_seed_rel = sub.add_parser(
+        "seed-relations",
+        help="Seed entity relations DB from data/relations_seed.json",
+    )
+    p_seed_rel.set_defaults(func=lambda a: __import__(
+        "scripts.seed_relations", fromlist=["run"]
+    ).run())
+
     args = parser.parse_args()
     args.func(args)
 
