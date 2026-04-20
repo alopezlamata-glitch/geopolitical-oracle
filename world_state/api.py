@@ -90,31 +90,56 @@ def get_entity_trajectory(
 
 # ── 4. Full context (used by features/builder.py) ────────────────────────────
 
-def build_entity_context(entity_name: str) -> dict:
+class EntityContext(dict):
     """
-    Merge world_state + relations + causal-neighbour context into one dict.
+    Flat dict of entity features with typed namespace metadata.
 
-    Key namespaces in the returned dict:
-      <feature>             world_state columns (military_count_7d, eco_*, …)
-      <feature>             relation features (leader_tenure_years, n_sanctions, …)
-      neighbor_<src>_<feat> causal-neighbour injected values
-      _world_state_*        metadata (staleness, availability)
+    Fully backward-compatible with all dict operations (get, items, update,
+    iteration, ``isinstance(ctx, dict)``). New code that needs to distinguish
+    world-state features from relation features from causal-neighbour context
+    should use ``ctx.namespaces`` instead of prefix-checking on keys.
 
-    Callers must NOT mutate the returned dict — make a copy if needed.
-    Returns {} when the entity has no world state and no relations.
+    Namespace keys in ``ctx.namespaces``:
+      "world_state"  — event-derived EMA features from the world_state DB table
+      "relations"    — static/temporal relation features (leader_tenure_years, …)
+      "neighbors"    — causal-neighbour injected values (neighbor_* prefixed)
+      "metadata"     — internal metadata (_world_state_* prefixed keys)
     """
-    ctx: dict = {}
+    __slots__ = ("namespaces",)
 
-    # 1. World state (largest, most important block)
+    def __init__(self, flat: dict, namespaces: "dict[str, dict]"):
+        super().__init__(flat)
+        self.namespaces = namespaces
+
+
+def build_entity_context(entity_name: str) -> EntityContext:
+    """
+    Merge world_state + relations + causal-neighbour context into one EntityContext.
+
+    Returns an EntityContext (dict subclass) with the same flat key layout as
+    before — all existing callers are unaffected.  New code can access typed
+    namespaces via ``ctx.namespaces["world_state"]`` etc.
+
+    Returns an empty EntityContext when the entity has no world state and no relations.
+    """
+    ns_world_state: dict = {}
+    ns_relations:   dict = {}
+    ns_neighbors:   dict = {}
+    ns_metadata:    dict = {}
+
+    # 1. World state — split into feature keys and _metadata_ keys
     ws = get_entity_state(entity_name)
-    ctx.update(ws)
+    for k, v in ws.items():
+        if k.startswith("_"):
+            ns_metadata[k] = v
+        else:
+            ns_world_state[k] = v
 
-    # 2. Relation features (tenure, sanctions, etc.)
-    # Only fill keys not already set by world state
+    # 2. Relation features — only keys not already covered by world state
     rel = get_entity_relations(entity_name)
     for k, v in rel.items():
-        if k not in ctx:
-            ctx[k] = v
+        if k not in ns_world_state:
+            ns_relations[k] = v
 
     # 3. Causal-neighbour context
     try:
@@ -122,40 +147,83 @@ def build_entity_context(entity_name: str) -> dict:
         nb = get_neighbor_context(entity_name) or {}
         for k, v in nb.items():
             if not k.startswith("_"):
-                ctx[k] = v
+                ns_neighbors[k] = v
     except Exception as e:
         logger.debug("build_entity_context: neighbor_context failed: %s", e)
 
-    staleness = ctx.get("_world_state_staleness_days", 99)
-    if ctx:
+    # Build flat dict (merge priority: world_state > metadata > relations > neighbors)
+    flat: dict = {}
+    flat.update(ns_world_state)
+    flat.update(ns_metadata)
+    for k, v in ns_relations.items():
+        if k not in flat:
+            flat[k] = v
+    flat.update(ns_neighbors)
+
+    namespaces = {
+        "world_state": ns_world_state,
+        "relations":   ns_relations,
+        "neighbors":   ns_neighbors,
+        "metadata":    ns_metadata,
+    }
+
+    staleness = flat.get("_world_state_staleness_days", 99)
+    if flat:
         logger.debug(
-            "build_entity_context(%s): %d keys, staleness=%s",
-            entity_name, len(ctx), staleness,
+            "build_entity_context(%s): %d keys (ws=%d rel=%d nb=%d meta=%d) staleness=%s",
+            entity_name, len(flat),
+            len(ns_world_state), len(ns_relations), len(ns_neighbors), len(ns_metadata),
+            staleness,
         )
 
-    return ctx
+    return EntityContext(flat, namespaces)
 
 
 # ── Staleness-aware blend weight ──────────────────────────────────────────────
 
 def world_state_weight(ctx: dict, default_if_stale: float = 0.3) -> float:
     """
-    Return the appropriate world-state blend weight given staleness.
+    Return the appropriate world-state blend weight given staleness AND coverage density.
 
-    staleness ≤ 1d  → 0.60  (fresh — trust the world model heavily)
-    staleness ≤ 3d  → 0.40
-    staleness ≤ 7d  → 0.25
-    otherwise       → default_if_stale (0.30 legacy behaviour)
+    Staleness tiers (base weight):
+      staleness ≤ 1d  → 0.60
+      staleness ≤ 3d  → 0.40
+      staleness ≤ 7d  → 0.25
+      otherwise       → default_if_stale
 
-    Pass this to builder.py so the blend is centralised here.
+    Density multiplier (applied multiplicatively to the staleness base):
+      density_factor = clamp(sqrt(n_events_used / 30.0) * data_completeness, 0.30, 1.0)
+
+    A 1d-fresh snapshot built from 3 events at 50% completeness receives
+    0.60 × clamp(sqrt(0.1)×0.50) ≈ 0.60 × 0.30 = 0.18 instead of 0.60.
+    A 1d-fresh snapshot with 300 events at 100% completeness keeps its 0.60.
+
+    When n_events_used or data_completeness are absent from ctx, the density
+    block is skipped and staleness-only behaviour is preserved exactly.
+
+    Final weight is clamped to [0.10, 0.60].
     """
     staleness = ctx.get("_world_state_staleness_days")
     if staleness is None:
         return default_if_stale
+
+    # Staleness tier
     if staleness <= 1:
-        return 0.60
-    if staleness <= 3:
-        return 0.40
-    if staleness <= 7:
-        return 0.25
-    return default_if_stale
+        base = 0.60
+    elif staleness <= 3:
+        base = 0.40
+    elif staleness <= 7:
+        base = 0.25
+    else:
+        base = default_if_stale
+
+    # Density multiplier
+    n_events     = ctx.get("n_events_used")
+    completeness = ctx.get("data_completeness")
+    if n_events is not None and completeness is not None:
+        import math
+        raw_density    = math.sqrt(max(0.0, float(n_events)) / 30.0) * float(completeness)
+        density_factor = max(0.30, min(1.0, raw_density))
+        base           = max(0.10, min(0.60, base * density_factor))
+
+    return base
