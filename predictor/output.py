@@ -146,6 +146,17 @@ def format_output(
         lines.append(row(f"  Risk profile    : {risk}"))
         lines.append(row(f"  Consistency     : {cons:.2f}  (1.0=aligned with trajectory)"))
 
+        # Sub-horizon breakdown when shorter forecasts are available
+        p_7d  = prediction.get("trajectory_p_7d")
+        p_30d = prediction.get("trajectory_p_30d")
+        if p_7d is not None or p_30d is not None:
+            lines.append(row("  Time horizons   :"))
+            if p_7d  is not None:
+                lines.append(row(f"    7d  → {p_7d:.3f}"))
+            if p_30d is not None:
+                lines.append(row(f"    30d → {p_30d:.3f}"))
+            lines.append(row(f"    {(deadline_days if (deadline_days := prediction.get('_horizon_days')) else '?')}d  → {traj_p:.3f}  (full horizon)"))
+
     # ── Coherence (Phase 3) ───────────────────────────────────────────────────
     coh_score = prediction.get("coherence_score")
     coh_viols = prediction.get("coherence_violations", 0)

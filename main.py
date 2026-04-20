@@ -759,6 +759,51 @@ def main():
         "scripts.seed_relations", fromlist=["run"]
     ).run())
 
+    p_seed_mkt = sub.add_parser(
+        "seed-markets",
+        help="Seed resolved market predictions from Manifold (blend calibration bootstrap)",
+    )
+    p_seed_mkt.add_argument("--limit", type=int, default=500)
+    p_seed_mkt.add_argument("--dry-run", action="store_true")
+    p_seed_mkt.set_defaults(func=lambda a: __import__(
+        "scripts.seed_from_markets", fromlist=["run"]
+    ).run(limit=a.limit, dry_run=a.dry_run))
+
+    p_seed_td = sub.add_parser(
+        "seed-training-data",
+        help="Generate synthetic training examples to bootstrap XGBoost",
+    )
+    p_seed_td.set_defaults(func=lambda a: __import__(
+        "scripts.seed_training_data", fromlist=["main"]
+    ).main())
+
+    p_eval = sub.add_parser(
+        "evaluate",
+        help="Evaluate model: Brier, AUC, calibration ECE on resolved predictions",
+    )
+    p_eval.add_argument("--since", metavar="YYYY-MM-DD", help="Only include predictions after this date")
+    p_eval.add_argument("--no-save", action="store_true")
+    p_eval.set_defaults(func=lambda a: __import__(
+        "scripts.evaluate", fromlist=["run"]
+    ).run(
+        since=__import__("datetime", fromlist=["datetime"]).datetime.fromisoformat(a.since).replace(
+            tzinfo=__import__("datetime", fromlist=["timezone"]).timezone.utc
+        ) if a.since else None,
+        save=not a.no_save,
+    ))
+
+    p_nightly = sub.add_parser(
+        "nightly",
+        help="Run full nightly pipeline: update-world-state → fit → resolve → blend → evaluate",
+    )
+    p_nightly.add_argument("--skip", nargs="+",
+                           choices=["update", "fit", "resolve", "blend", "evaluate"],
+                           default=[], metavar="STEP")
+    p_nightly.add_argument("--dry-run", action="store_true")
+    p_nightly.set_defaults(func=lambda a: __import__(
+        "scripts.nightly_pipeline", fromlist=["run"]
+    ).run(skip=set(a.skip), dry_run=a.dry_run))
+
     args = parser.parse_args()
     args.func(args)
 

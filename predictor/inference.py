@@ -291,10 +291,13 @@ def _enrich_with_trajectory(
 
         ref = as_of_time or datetime.now(timezone.utc)
         horizon_days = max(1, (deadline - ref).days)
+        result["_horizon_days"] = horizon_days
+
+        predicate = str(features.get("_predicate", "unknown"))
 
         traj_result = marginalize_with_uncertainty(
             entity_name=country,
-            predicate=str(features.get("_predicate", "unknown")),
+            predicate=predicate,
             event_family=event_family,
             horizon_days=horizon_days,
             n_samples=100,
@@ -319,6 +322,19 @@ def _enrich_with_trajectory(
         result["trajectory_risk_profile"] = traj_result.get("risk_profile")
         result["trajectory_consistency"] = round(consistency, 3)
         result["trajectory_n_samples"]  = traj_result.get("n_samples", 0)
+
+        # ── Multi-horizon sub-forecasts ────────────────────────────────────────
+        for short_h in (7, 30):
+            if horizon_days > short_h:
+                sub = marginalize_with_uncertainty(
+                    entity_name=country,
+                    predicate=predicate,
+                    event_family=event_family,
+                    horizon_days=short_h,
+                    n_samples=60,
+                )
+                if sub and sub.get("p_trajectory") is not None:
+                    result[f"trajectory_p_{short_h}d"] = sub["p_trajectory"]
 
         logger.info(
             "trajectory[%s/%s]: p_traj=%.3f  p_current=%.3f  consistency=%.2f  "
