@@ -369,6 +369,11 @@ def _enrich_with_trajectory(
             result["p_before_trajectory"] = p_current
             result["calibrated_prob"]     = blended
             result["answer"]              = "YES" if blended >= 0.5 else "NO"
+            # Recompute CI on the blended probability — the pre-trajectory CI is now stale.
+            traj_lo, traj_hi, traj_ci_m = _conformal_ci(blended)
+            result["ci_lo"]    = round(traj_lo, 4)
+            result["ci_hi"]    = round(traj_hi, 4)
+            result["ci_method"] = traj_ci_m + "+traj"
             logger.info(
                 "trajectory blend[%s]: %.3f → %.3f (traj=%.3f consistency=%.2f)",
                 country, p_current, blended, p_traj, consistency,
