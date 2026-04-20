@@ -42,15 +42,16 @@ for _log in ("aiohttp", "urllib3", "feedparser", "shap"):
     logging.getLogger(_log).setLevel(logging.WARNING)
 
 
-async def _collect_all(question: str, country: str | None) -> tuple[list, dict, str]:
+async def _collect_all(question: str, country: str | None) -> tuple[list, dict, str, dict]:
     """
-    Run all collectors concurrently (7 in parallel).
+    Run all collectors concurrently (9 in parallel).
 
     Returns:
-        (raw_events, market_meta, wiki_context) where:
-          - raw_events   : list[RawEvent] from GDELT + RSS + ACLED
-          - market_meta  : dict with forecasting market quality signals
-          - wiki_context : str  Wikipedia article extract (may be "")
+        (raw_events, market_meta, wiki_context, economic_context) where:
+          - raw_events        : list[RawEvent] from GDELT + RSS + ACLED
+          - market_meta       : dict with forecasting market quality signals
+          - wiki_context      : str  Wikipedia article extract (may be "")
+          - economic_context  : dict with eco_* and pol_* features from WB + FRED + V-Dem
 
     Market priority:
       1. Polymarket (real-money, highest signal quality)
@@ -62,17 +63,25 @@ async def _collect_all(question: str, country: str | None) -> tuple[list, dict, 
         collect_polymarket, collect_acled, collect_wikipedia,
         collect_manifold,
     )
+    from collector.worldbank import collect_worldbank
+    from collector.fred import collect_fred
+    from collector.acled import _extract_country as _acled_country
+
+    # Resolve country for structural data fetchers (WB, ACLED, V-Dem)
+    resolved_country = country or _acled_country(question) or ""
 
     # No session-level timeout — each collector manages its own timeout
     async with aiohttp.ClientSession() as session:
         results = await asyncio.gather(
-            collect_gdelt(session, question),       # 0
-            collect_rss(session, question),         # 1
-            collect_metaculus(session, question),   # 2
-            collect_polymarket(session, question),  # 3
-            collect_acled(session, question, country=country),  # 4
-            collect_wikipedia(session, question),   # 5
-            collect_manifold(session, question),    # 6
+            collect_gdelt(session, question),                            # 0
+            collect_rss(session, question),                              # 1
+            collect_metaculus(session, question),                        # 2
+            collect_polymarket(session, question),                       # 3
+            collect_acled(session, question, country=resolved_country),  # 4
+            collect_wikipedia(session, question),                        # 5
+            collect_manifold(session, question),                         # 6
+            collect_worldbank(session, resolved_country),                # 7
+            collect_fred(session),                                       # 8
             return_exceptions=True,
         )
 
@@ -83,6 +92,8 @@ async def _collect_all(question: str, country: str | None) -> tuple[list, dict, 
     acled_events   = results[4] if not isinstance(results[4], Exception) else []
     wiki_result    = results[5] if not isinstance(results[5], Exception) else None
     manifold_result= results[6] if not isinstance(results[6], Exception) else (None, 0)
+    wb_result      = results[7] if not isinstance(results[7], Exception) else {}
+    fred_result    = results[8] if not isinstance(results[8], Exception) else {}
 
     for i, r in enumerate(results):
         if isinstance(r, Exception):
@@ -135,7 +146,29 @@ async def _collect_all(question: str, country: str | None) -> tuple[list, dict, 
         "polymarket_match_score": float(polymarket_mscore) if polymarket_mscore else None,
     }
 
-    return all_events, market_meta, wiki_context
+    # Merge economic context: World Bank + FRED (FRED overwrites WB for overlapping keys)
+    economic_context: dict[str, float] = {}
+    if isinstance(wb_result, dict):
+        economic_context.update(wb_result)
+    if isinstance(fred_result, dict):
+        economic_context.update(fred_result)
+
+    # V-Dem political indicators (static, from snapshot if available)
+    if resolved_country:
+        try:
+            from collector.vdem import get_vdem_features
+            vdem_feats = get_vdem_features(resolved_country)
+            if vdem_feats:
+                economic_context.update(vdem_feats)
+                logger.info("vdem: loaded %d features for '%s'", len(vdem_feats), resolved_country)
+        except Exception as e:
+            logger.debug("vdem: skipped: %s", e)
+
+    n_eco = sum(1 for k, v in economic_context.items() if not k.startswith("_") and v != 0.0)
+    if n_eco:
+        logger.info("economic_context: %d non-zero features from WB/FRED/V-Dem", n_eco)
+
+    return all_events, market_meta, wiki_context, economic_context
 
 
 def _print_parse_summary(pq, ood) -> None:
@@ -196,7 +229,7 @@ def cmd_predict(args) -> None:
     from normalizer.deduplicator import deduplicate
     from features.builder import build_features
     from features.store import save_features
-    from predictor.inference import predict
+    from predictor.inference import predict_for_domain
     from predictor.attribution import compute_shap_attribution
     from predictor.output import format_output, save_prediction
     from monitor.drift import detect_drift
@@ -216,6 +249,9 @@ def cmd_predict(args) -> None:
 
     # ── Step 1: Parse and OOD check ──────────────────────────────────────────
     pq = parse_question(question)
+    # Use parsed jurisdiction as country if not explicitly provided
+    if not country and pq.jurisdiction:
+        country = pq.jurisdiction
     ood = assess_ood(pq)
 
     _print_parse_summary(pq, ood)
@@ -236,7 +272,7 @@ def cmd_predict(args) -> None:
     print("Collecting from GDELT, RSS, Metaculus, Polymarket, ACLED...")
 
     # ── Step 2: Collect ───────────────────────────────────────────────────────
-    raw_events, market_meta, wiki_context = asyncio.run(_collect_all(question, country))
+    raw_events, market_meta, wiki_context, economic_context = asyncio.run(_collect_all(question, country))
     as_of_time = datetime.now(timezone.utc)   # strict data cutoff: nothing after this
 
     metaculus_p   = market_meta["metaculus_p"]
@@ -272,7 +308,12 @@ def cmd_predict(args) -> None:
         question=question,
         use_llm=True,
         wiki_context=wiki_context,
+        event_family=pq.event_family,
+        economic_context=economic_context,
     )
+    # Pass predicate as a sentinel so base_rate_predictor can look up the base rate.
+    # Stored with underscore prefix so XGBoost skips it (not in _FEATURE_NAMES).
+    features["_predicate"] = pq.predicate or "unknown"
     if features.get("llm_available", 0.0) > 0:
         print(f"  LLM features    : threat={features['llm_threat_level']:.2f}  "
               f"esc={features['llm_escalation']:.2f}  "
@@ -282,9 +323,20 @@ def cmd_predict(args) -> None:
     # Legacy artifact for local debugging/export; not used by train/label/eval primary flows
     save_features(question, features, provenance, event_ids)
 
-    # ── Step 5: Predict (calibrated market blend) ─────────────────────────────
-    prediction = predict(
-        features,
+    # ── Step 5: Predict (routed by matched model) ─────────────────────────────
+    headlines = [e.raw_title for e in deduped if e.raw_title.strip()]
+    deadline_dt = (
+        datetime.combine(pq.deadline, datetime.min.time()).replace(tzinfo=timezone.utc)
+        if pq.deadline else None
+    )
+    prediction = predict_for_domain(
+        matched_model=ood.matched_model or "xgb_conflict_v3",
+        features=features,
+        event_family=pq.event_family,
+        question=question,
+        headlines=headlines,
+        deadline=deadline_dt,
+        wiki_context=wiki_context,
         metaculus_p=metaculus_p,
         polymarket_p=polymarket_p,
         metaculus_forecasters=market_meta["metaculus_forecasters"],
@@ -292,6 +344,14 @@ def cmd_predict(args) -> None:
         polymarket_match_score=market_meta["polymarket_match_score"],
         as_of_time=as_of_time,
     )
+    if prediction.get("predictor") == "ollama_reasoning_v1":
+        attr = prediction.get("attribution", {})
+        if attr.get("reasoning"):
+            reasoning_line = attr["reasoning"][:120]
+            sys.stdout.buffer.write(
+                (f"  Ollama reasoning: {reasoning_line}...\n").encode("utf-8", errors="replace")
+            )
+            sys.stdout.buffer.flush()
     events_by_id = {e.event_id: e for e in deduped}
     attribution = compute_shap_attribution(features, provenance, events_by_id)
     drift_flags = detect_drift(features)
@@ -399,7 +459,7 @@ def cmd_calibration(args) -> None:
     print(f"ECE (raw)        : {ece_raw}")
     print("\nCalibration buckets (calibrated probs vs actual):")
     for b in data.get("buckets", []):
-        bar = "█" * int(b["mean_actual"] * 20)
+        bar = "#" * int(b["mean_actual"] * 20)
         print(f"  {b['bin']:12}  n={b['count']:4d}  pred={b['mean_pred']:.3f}  actual={b['mean_actual']:.3f}  {bar}")
 
 
@@ -494,6 +554,93 @@ def cmd_db(args) -> None:
                 print(f"Mean Brier (resolved): {avg_brier:.4f}")
 
 
+def cmd_auto_resolve(args) -> None:
+    from scripts.auto_resolve import run as auto_resolve_run
+    auto_resolve_run(
+        dry_run=args.dry_run,
+        limit=args.limit,
+        min_confidence=args.min_confidence,
+    )
+
+
+def cmd_update_world_state(args) -> None:
+    from scripts.update_world_state import run as uws_run
+    uws_run(
+        entity_names=args.entity or None,
+        dry_run=args.dry_run,
+        apply_causal=not args.no_causal,
+        priority_only=args.priority_only,
+        concurrency=args.concurrency,
+    )
+
+
+def cmd_world_state(args) -> None:
+    """Show current world state for one or all entities."""
+    from data_layer.db import init_schema, get_db, table_exists
+
+    init_schema()
+    if not table_exists("world_state"):
+        print("No world state yet. Run: python main.py update-world-state")
+        return
+
+    db = get_db()
+
+    if args.entity:
+        import hashlib
+        eid = "ent_" + hashlib.sha256(f"country|{args.entity.lower()}".encode()).hexdigest()[:24]
+        rows = db.execute("""
+            SELECT as_of_date, military_count_7d, escalation_index,
+                   event_velocity_7d, pol_approval_pressure,
+                   eco_market_volatility, n_events_used, data_completeness
+            FROM world_state
+            WHERE entity_id = ?
+            ORDER BY as_of_date DESC
+            LIMIT 10
+        """, [eid]).fetchall()
+
+        if not rows:
+            print(f"No world state found for '{args.entity}'")
+            return
+
+        print(f"\nWorld state history — {args.entity}")
+        print(f"{'Date':<12} {'Mil_7d':>7} {'Esc':>7} {'Vel':>7} {'Pol':>7} {'EcoVol':>7} {'Events':>7} {'Compl':>6}")
+        print("-" * 66)
+        for r in rows:
+            print(f"{str(r[0]):<12} {r[1]:>7.1f} {r[2]:>7.3f} {r[3]:>7.3f} {r[4]:>7.3f} {r[5]:>7.3f} {r[6]:>7d} {r[7]:>5.0%}")
+    else:
+        # Summary across all entities
+        rows = db.execute("""
+            SELECT e_id, name, as_of_date, mil_7d, esc, vel, n_ev
+            FROM (
+                SELECT ws.entity_id AS e_id,
+                       ws.entity_id AS name,
+                       ws.as_of_date,
+                       ws.military_count_7d AS mil_7d,
+                       ws.escalation_index  AS esc,
+                       ws.event_velocity_7d AS vel,
+                       ws.n_events_used     AS n_ev,
+                       ROW_NUMBER() OVER (PARTITION BY ws.entity_id ORDER BY ws.as_of_date DESC) AS rn
+                FROM world_state ws
+                WHERE ws.valid_to IS NULL
+            ) sub
+            WHERE rn = 1
+            ORDER BY esc DESC
+            LIMIT 20
+        """).fetchall()
+
+        if not rows:
+            print("No world state rows yet.")
+            return
+
+        total = db.execute("SELECT COUNT(DISTINCT entity_id) FROM world_state").fetchone()[0]
+        latest = db.execute("SELECT MAX(as_of_date) FROM world_state").fetchone()[0]
+        print(f"\nCurrent world state — {total} entities, last update: {latest}")
+        print(f"{'Entity ID':<30} {'Date':<12} {'Mil_7d':>7} {'Esc':>7} {'Vel':>7} {'Events':>7}")
+        print("-" * 74)
+        for r in rows:
+            print(f"{str(r[0])[:28]:<30} {str(r[2]):<12} {r[3]:>7.1f} {r[4]:>7.3f} {r[5]:>7.3f} {r[6]:>7d}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Geopolitical Oracle")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -530,6 +677,37 @@ def main():
         help="Phase B: learn market blend weights from resolved history",
     )
     p_blend.set_defaults(func=cmd_blend_calibrate)
+
+    p_autores = sub.add_parser(
+        "auto-resolve",
+        help="Auto-resolve overdue questions via Ollama LLM (flywheel labeling)",
+    )
+    p_autores.add_argument("--dry-run", action="store_true", help="Simulate without writing")
+    p_autores.add_argument("--limit", type=int, default=20, help="Max questions to process")
+    p_autores.add_argument("--min-confidence", type=float, default=0.85)
+    p_autores.set_defaults(func=cmd_auto_resolve)
+
+    p_uws = sub.add_parser(
+        "update-world-state",
+        help="Run daily world state update for all entities",
+    )
+    p_uws.add_argument("--entity", "-e", nargs="+", metavar="NAME",
+                       help="Only update these entities")
+    p_uws.add_argument("--dry-run", action="store_true")
+    p_uws.add_argument("--no-causal", action="store_true",
+                       help="Skip cross-entity causal propagation")
+    p_uws.add_argument("--priority-only", action="store_true",
+                       help="Only high-priority entities")
+    p_uws.add_argument("--concurrency", type=int, default=4)
+    p_uws.set_defaults(func=cmd_update_world_state)
+
+    p_ws = sub.add_parser(
+        "world-state",
+        help="Show current world state snapshot",
+    )
+    p_ws.add_argument("--entity", "-e", metavar="NAME",
+                      help="Show history for a specific entity")
+    p_ws.set_defaults(func=cmd_world_state)
 
     args = parser.parse_args()
     args.func(args)

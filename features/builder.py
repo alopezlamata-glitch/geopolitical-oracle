@@ -25,6 +25,21 @@ _LLM_FEATURE_NAMES = [
     "llm_query_event_similarity",  # cosine sim between question embedding and mean event embedding
 ]
 
+# ── Domain-specific LLM-extracted features ───────────────────────────────────
+# Used by base_rate_predictor for non-conflict domains.
+# LLM extracts these as numbers from text; statistical engine uses them for probability.
+_DOMAIN_FEATURE_NAMES = [
+    # Political
+    "pol_resignation_signals", "pol_approval_pressure", "pol_coalition_stability",
+    "pol_electoral_proximity", "pol_judicial_pressure",
+    # Economic
+    "eco_rate_change_prob", "eco_gdp_momentum", "eco_debt_stress",
+    "eco_market_volatility", "eco_policy_uncertainty",
+    # Legal
+    "leg_arrest_probability", "leg_extradition_risk", "leg_evidence_strength",
+    "leg_jurisdictional_support", "leg_precedent_match",
+]
+
 _DECAY_HALFLIFE_DAYS = 7.0
 
 # ── Feature registry ──────────────────────────────────────────────────────────
@@ -88,6 +103,8 @@ def build_features(
     question: Optional[str] = None,        # used for LLM feature extraction (non-fatal)
     use_llm: bool = True,                  # set False to skip LLM even if Ollama available
     wiki_context: str = "",                # Wikipedia background text for LLM prompt enrichment
+    event_family: Optional[str] = None,    # if set, extract domain-specific features (pol/eco/leg)
+    economic_context: Optional[dict] = None,  # pre-fetched WB/FRED/V-Dem features
 ) -> tuple[dict[str, float], dict[str, list[dict]]]:
     """
     Returns (feature_vector, provenance).
@@ -286,6 +303,42 @@ def build_features(
     prov["country_polity_norm"] = []
     prov["country_mil_spending_norm"] = []
 
+    # ── World state enrichment (Phase 1 world model) ─────────────────────────
+    # If a pre-computed world state exists for this country (from the daily
+    # update_world_state.py run), use it to enrich features:
+    #   - Features with no signal from current events → filled from world state
+    #   - Features with signal from current events → blended (fresh=0.7, ws=0.3)
+    # World state captures EMA-smoothed, causally-propagated history not visible
+    # in the per-question event window.
+    if country:
+        try:
+            from world_state.reader import get_world_state
+            ws = get_world_state(country)
+            if ws is not None:
+                staleness = ws.get("_world_state_staleness_days", 99)
+                # Only use if not too stale (≤2 days for dynamic features)
+                ws_weight = 0.3 if staleness <= 2 else 0.15
+                n_enriched = 0
+                for fname in _FEATURE_NAMES:
+                    ws_val = ws.get(fname)
+                    if ws_val is None:
+                        continue
+                    current = feat.get(fname, 0.0)
+                    if current == 0.0:
+                        # No fresh signal — use world state directly
+                        feat[fname] = float(ws_val)
+                        n_enriched += 1
+                    else:
+                        # Fresh signal exists — blend, prioritizing fresh events
+                        feat[fname] = round((1.0 - ws_weight) * current + ws_weight * float(ws_val), 6)
+                if n_enriched:
+                    logger.info(
+                        "world_state: enriched %d zero-features from %s state (stale=%dd, ws_weight=%.2f)",
+                        n_enriched, country, staleness, ws_weight,
+                    )
+        except Exception as e:
+            logger.debug("world_state enrichment skipped: %s", e)
+
     # ── LLM feature extraction (v4, non-fatal) ────────────────────────────────
     # These 6 features are NOT in _FEATURE_NAMES so the v3 XGBoost ignores them.
     # They are stored alongside v3 features in feature_snapshots for v4 training.
@@ -342,6 +395,50 @@ def build_features(
 
     feat.update(llm_feats)
 
+    # ── Structural economic context (WB / FRED / V-Dem) ──────────────────────
+    # Pre-fetched features from World Bank, FRED, and V-Dem snapshot.
+    # These are structural/slow-moving signals; LLM domain features may override
+    # with question-specific dynamic signals.
+    if economic_context:
+        for k, v in economic_context.items():
+            if isinstance(v, (int, float)) and not k.startswith("_"):
+                feat[k] = float(v)
+        n_applied = sum(1 for k, v in economic_context.items()
+                        if not k.startswith("_") and isinstance(v, (int, float)) and v != 0.0)
+        if n_applied:
+            logger.info("builder: applied %d structural features (WB/FRED/V-Dem)", n_applied)
+
+    # ── Domain-specific feature extraction (non-conflict) ─────────────────────
+    # For political/economic/legal domains, LLM extracts structured domain features.
+    # These are used by base_rate_predictor (not by XGBoost) and stored in feature_snapshots.
+    if use_llm and event_family and event_family not in ("conflict", "unknown"):
+        domain_feats: dict[str, float] = {k: 0.0 for k in _DOMAIN_FEATURE_NAMES}
+        try:
+            from llm.domain_features import extract_domain_features
+            # Collect headlines for domain extractor
+            domain_headlines = [
+                ev.raw_title
+                for ev in sorted(events, key=lambda e: e.occurred_at, reverse=True)
+                if ev.raw_title.strip()
+            ] if events else []
+            extracted = extract_domain_features(
+                event_family=event_family,
+                question=question or "",
+                headlines=domain_headlines,
+            )
+            domain_feats.update(extracted)
+            n_nonzero = sum(1 for v in extracted.values() if abs(v) > 0.01)
+            logger.info(
+                "domain features[%s]: %d/%d nonzero extracted",
+                event_family, n_nonzero, len(extracted),
+            )
+        except Exception as e:
+            logger.debug("domain feature extraction skipped: %s", e)
+        # Only apply LLM domain features when nonzero — don't overwrite WB/FRED with zeros
+        for k, v in domain_feats.items():
+            if abs(v) > 0.01 or feat.get(k, 0.0) == 0.0:
+                feat[k] = v
+
     return dict(feat), dict(prov)
 
 
@@ -353,3 +450,8 @@ def get_feature_names() -> list[str]:
 def get_feature_names_v4() -> list[str]:
     """Return all feature names including LLM features (for future v4 training)."""
     return list(_FEATURE_NAMES) + list(_LLM_FEATURE_NAMES)
+
+
+def get_domain_feature_names() -> list[str]:
+    """Return domain-specific feature names for non-conflict domains."""
+    return list(_DOMAIN_FEATURE_NAMES)
