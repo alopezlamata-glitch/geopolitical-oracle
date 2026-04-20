@@ -48,27 +48,38 @@ def _keywords(text: str) -> set[str]:
     return {t for t in tokens if len(t) >= 3 and t not in _STOP}
 
 
+def _entities(text: str) -> set[str]:
+    """Extract proper nouns (capitalized tokens) as entity signals."""
+    tokens = re.findall(r"\b[A-Z][a-z]{2,}\b", text)
+    return {t.lower() for t in tokens if t.lower() not in _STOP}
+
+
 def _score(query: str, market_question: str) -> float:
+    """
+    Entity-aware overlap score.
+    Proper nouns in the query (countries, people, orgs) count 3× vs generic keywords.
+    """
     q_kws = _keywords(query)
     m_kws = _keywords(market_question)
     if not q_kws:
         return 0.0
+
+    q_ents = _entities(query)
+    if q_ents:
+        regular_kws = q_kws - q_ents
+        ent_matches     = len(q_ents & m_kws)
+        regular_matches = len(regular_kws & m_kws)
+        total_weight = 3 * len(q_ents) + max(len(regular_kws), 1)
+        return round((3 * ent_matches + regular_matches) / total_weight, 4)
+
     return round(len(q_kws & m_kws) / max(len(q_kws), 1), 4)
 
 
-@graceful_collector("manifold")
-async def collect_manifold(
-    session: aiohttp.ClientSession, query: str
-) -> tuple[Optional[float], int]:
-    """
-    Returns (community_prediction, num_bettors) or (None, 0) if no suitable market.
-    """
-    keywords = " ".join(list(_keywords(query))[:6])
-    if not keywords:
-        return None, 0
-
+async def _fetch_markets(
+    session: aiohttp.ClientSession, term: str
+) -> list[dict]:
     params = {
-        "term": keywords,
+        "term": term,
         "limit": "20",
         "sort": "liquidity",
         "filter": "open",
@@ -78,15 +89,47 @@ async def collect_manifold(
         _BASE_URL, params=params, timeout=_TIMEOUT, headers=_HEADERS
     ) as resp:
         if resp.status in (403, 429):
-            logger.warning("manifold: HTTP %d", resp.status)
-            return None, 0
+            logger.warning("manifold: HTTP %d on term=%r", resp.status, term[:40])
+            return []
         resp.raise_for_status()
-        markets = await resp.json(content_type=None)
+        data = await resp.json(content_type=None)
+    return data if isinstance(data, list) else []
 
-    if not isinstance(markets, list):
+
+@graceful_collector("manifold")
+async def collect_manifold(
+    session: aiohttp.ClientSession, query: str
+) -> tuple[Optional[float], int]:
+    """
+    Returns (community_prediction, num_bettors) or (None, 0) if no suitable market.
+
+    Tries two search strategies:
+      1. Full keyword set (existing behaviour)
+      2. Entity-only terms (country/org names) — better recall for geopolitical queries
+    Results are merged; best entity-aware score wins.
+    """
+    kws = _keywords(query)
+    if not kws:
         return None, 0
 
-    for m in markets:
+    # Build search term lists
+    full_term   = " ".join(list(kws)[:6])
+    entity_term = " ".join(list(_entities(query))[:4])
+
+    # Fetch from both strategies; deduplicate by market id
+    seen: dict[str, dict] = {}
+    for term in dict.fromkeys([full_term, entity_term] if entity_term else [full_term]):
+        for m in await _fetch_markets(session, term):
+            mid = m.get("id") or m.get("slug") or m.get("question", "")[:60]
+            seen.setdefault(mid, m)
+
+    # Score all candidates against original query, pick best
+    best_score = 0.0
+    best_p: Optional[float] = None
+    best_bettors = 0
+    best_question = ""
+
+    for m in seen.values():
         question = m.get("question", "")
         score = _score(query, question)
         if score < _MIN_OVERLAP:
@@ -103,15 +146,22 @@ async def collect_manifold(
             p = float(p)
         except (TypeError, ValueError):
             continue
-
         if not (0.01 < p < 0.99):
             continue
 
+        # Prefer higher score; break ties with bettor count
+        if score > best_score or (score == best_score and bettors > best_bettors):
+            best_score    = score
+            best_p        = p
+            best_bettors  = bettors
+            best_question = question
+
+    if best_p is not None:
         logger.info(
             "manifold: p=%.3f (%d bettors, score=%.2f) — %r",
-            p, bettors, score, question[:70],
+            best_p, best_bettors, best_score, best_question[:70],
         )
-        return p, bettors
+    else:
+        logger.debug("manifold: no market matched for query: %r", full_term[:60])
 
-    logger.debug("manifold: no market matched for query: %r", keywords[:60])
-    return None, 0
+    return best_p, best_bettors

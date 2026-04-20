@@ -53,13 +53,31 @@ def _keywords(text: str) -> set[str]:
     return {w for w in _normalize(text).split() if len(w) >= 3 and w not in _STOP}
 
 
+def _entities(text: str) -> set[str]:
+    """Extract proper nouns (capitalized tokens ≥ 3 chars) as entity signals."""
+    tokens = re.findall(r"\b[A-Z][a-z]{2,}\b", text)
+    return {t.lower() for t in tokens if t.lower() not in _STOP}
+
+
 def _score(query: str, market_title: str) -> float:
+    """
+    Entity-aware overlap score.
+    Proper nouns (country/org/person names) in the query count 3× vs generic tokens.
+    """
     q_kws = _keywords(query)
     m_kws = _keywords(market_title)
     if not q_kws:
         return 0.0
-    overlap = len(q_kws & m_kws) / max(len(q_kws), 1)
-    return round(overlap, 4)
+
+    q_ents = _entities(query)
+    if q_ents:
+        regular_kws     = q_kws - q_ents
+        ent_matches     = len(q_ents & m_kws)
+        regular_matches = len(regular_kws & m_kws)
+        total_weight    = 3 * len(q_ents) + max(len(regular_kws), 1)
+        return round((3 * ent_matches + regular_matches) / total_weight, 4)
+
+    return round(len(q_kws & m_kws) / max(len(q_kws), 1), 4)
 
 
 def _extract_yes_price(m: dict) -> Optional[float]:

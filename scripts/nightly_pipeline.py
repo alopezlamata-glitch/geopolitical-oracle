@@ -6,6 +6,7 @@ Runs the full daily update sequence:
   2. fit_transition_model  — refit VAR models on new history
   3. auto_resolve          — close overdue questions with high-confidence Ollama
   4. blend_calibrate       — update blend weights from resolved predictions
+  4.5. fit_domain_calibrator — per-domain isotonic recalibration
   5. evaluate              — emit eval report (logged, not printed)
 
 Designed to be run by cron at ~02:00 UTC:
@@ -87,6 +88,13 @@ def run(skip: set[str] | None = None, dry_run: bool = False) -> None:
 
     results["blend"] = _step("blend_calibrate", _blend_calibrate, skip, dry_run)
 
+    # ── 4.5. Domain calibrator (per-domain isotonic recalibration) ────────────
+    def _fit_domain_calibrator():
+        from scripts.fit_domain_calibrator import run as _run, _DOMAIN_FEATURES
+        _run(domains=list(_DOMAIN_FEATURES.keys()), fit_weights=False)
+
+    results["domain_cal"] = _step("fit_domain_calibrator", _fit_domain_calibrator, skip, dry_run)
+
     # ── 5. Evaluation ─────────────────────────────────────────────────────────
     def _evaluate():
         from scripts.evaluate import run as _run
@@ -109,7 +117,7 @@ def run(skip: set[str] | None = None, dry_run: bool = False) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Nightly oracle pipeline")
     parser.add_argument("--skip", nargs="+", metavar="STEP",
-                        choices=["update", "fit", "resolve", "blend", "evaluate"],
+                        choices=["update", "fit", "resolve", "blend", "domain_cal", "evaluate"],
                         default=[], help="Steps to skip")
     parser.add_argument("--dry-run", action="store_true",
                         help="Log steps but don't execute")
