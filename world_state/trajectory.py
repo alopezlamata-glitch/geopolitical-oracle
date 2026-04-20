@@ -41,6 +41,10 @@ MIN_HISTORY_FOR_TRAJECTORY = 14
 
 _BASE_RATES_PATH = None   # lazy-loaded
 
+# Blend factor for causal neighbor influence per trajectory step.
+# Small so neighbor pressure nudges — does not override — the VAR forecast.
+_CAUSAL_BLEND = 0.05
+
 
 def _entity_id(name: str, entity_type: str = "country") -> str:
     raw = f"{entity_type}|{name.lower()}"
@@ -48,6 +52,67 @@ def _entity_id(name: str, entity_type: str = "country") -> str:
 
 
 # ── Assemble full trajectory ─────────────────────────────────────────────────
+
+def _load_causal_links_for_entity(entity_name: str) -> list[dict]:
+    """Return causal links where entity_name is the target."""
+    try:
+        from world_state.entity_graph import get_causal_neighbors
+        return get_causal_neighbors(entity_name)
+    except Exception:
+        return []
+
+
+def _load_neighbor_current_states(links: list[dict]) -> dict[str, dict]:
+    """Load current world state for each unique source entity in links."""
+    from world_state.reader import get_world_state
+    states: dict[str, dict] = {}
+    for link in links:
+        src = link.get("source_entity", "")
+        if src and src not in states:
+            st = get_world_state(src)
+            if st:
+                states[src] = st
+    return states
+
+
+def _apply_causal_nudges(
+    state: dict,
+    day_idx: int,
+    links: list[dict],
+    neighbor_states: dict[str, dict],
+) -> None:
+    """
+    Nudge target features in `state` based on causal neighbor values.
+
+    Each link contributes:
+      Δ = weight × source_value × exp(-day_idx / decay_days) × CAUSAL_BLEND
+
+    Effect decays with time; CAUSAL_BLEND keeps it from overwhelming VAR.
+    Mutates state in-place.
+    """
+    for link in links:
+        src       = link.get("source_entity", "")
+        src_feat  = link.get("source_feature", "")
+        tgt_feat  = link.get("target_feature") or link.get("source_feature")
+        weight    = float(link.get("weight", 0.0))
+        decay     = float(link.get("decay_days", 30.0))
+
+        nb_state = neighbor_states.get(src)
+        if nb_state is None:
+            continue
+
+        src_val = nb_state.get(src_feat)
+        if src_val is None or src_val == 0.0:
+            continue
+
+        exp_decay = math.exp(-day_idx / max(1.0, decay))
+        delta     = weight * float(src_val) * exp_decay * _CAUSAL_BLEND
+
+        if tgt_feat in state:
+            state[tgt_feat] = round(
+                max(-5.0, min(100.0, float(state[tgt_feat]) + delta)), 6
+            )
+
 
 def predict_trajectory(
     entity_name: str,
@@ -62,6 +127,10 @@ def predict_trajectory(
     feature dict compatible with world_state columns.
 
     Returns None if no VAR models are fitted for this entity.
+
+    Cross-entity propagation: at each step, causal neighbor states nudge
+    target features (decaying with day index) so that e.g. Russia's current
+    military buildup actively bends Ukraine's conflict trajectory.
     """
     eid = _entity_id(entity_name)
 
@@ -71,6 +140,15 @@ def predict_trajectory(
     if current_state is None:
         return None
 
+    # Load causal links + neighbor states for cross-entity propagation
+    causal_links   = _load_causal_links_for_entity(entity_name)
+    neighbor_states = _load_neighbor_current_states(causal_links)
+    if neighbor_states:
+        logger.debug(
+            "trajectory[%s]: %d causal links from %d neighbor(s)",
+            entity_name, len(causal_links), len(neighbor_states),
+        )
+
     # Forecast per domain
     domain_forecasts: dict[str, Optional[np.ndarray]] = {}
     for domain in ALL_DOMAINS:
@@ -79,11 +157,16 @@ def predict_trajectory(
 
     if all(v is None for v in domain_forecasts.values()):
         logger.debug("trajectory: no VAR models for %s — using static state", entity_name)
-        # Static fallback: repeat current state for all days
-        return [dict(current_state) for _ in range(horizon_days)]
+        # Static fallback: repeat current state for all days (still apply causal nudges)
+        trajectory: list[dict] = []
+        for day_idx in range(horizon_days):
+            state = dict(current_state)
+            _apply_causal_nudges(state, day_idx, causal_links, neighbor_states)
+            trajectory.append(state)
+        return trajectory
 
     # Assemble per-day state dicts
-    trajectory: list[dict] = []
+    trajectory = []
     for day_idx in range(horizon_days):
         state = dict(current_state)  # start from current
 
@@ -97,9 +180,11 @@ def predict_trajectory(
             for i, fname in enumerate(features):
                 if i < len(day_vector):
                     val = float(day_vector[i])
-                    # Clip to domain-reasonable range
                     val = max(-5.0, min(100.0, val))
                     state[fname] = round(val, 6)
+
+        # Cross-entity causal nudge (applied after VAR step)
+        _apply_causal_nudges(state, day_idx, causal_links, neighbor_states)
 
         trajectory.append(state)
 
@@ -114,6 +199,7 @@ def predict_trajectory_distribution(
     """
     Sample `n_samples` full-state trajectories (for uncertainty quantification).
     Returns list[n_samples] of list[horizon_days] of state dicts.
+    Cross-entity causal nudges are applied to every sampled trajectory.
     """
     eid = _entity_id(entity_name)
 
@@ -121,6 +207,10 @@ def predict_trajectory_distribution(
     current_state = get_world_state(entity_name)
     if current_state is None:
         return None
+
+    # Load causal links + neighbor states once (shared across all samples)
+    causal_links    = _load_causal_links_for_entity(entity_name)
+    neighbor_states = _load_neighbor_current_states(causal_links)
 
     # Sample per domain
     domain_samples: dict[str, Optional[np.ndarray]] = {}
@@ -142,6 +232,8 @@ def predict_trajectory_distribution(
                 for i, fname in enumerate(features):
                     if i < len(day_vector):
                         state[fname] = round(float(np.clip(day_vector[i], -5.0, 100.0)), 6)
+            # Cross-entity causal nudge (deterministic — same neighbor state for all samples)
+            _apply_causal_nudges(state, day_idx, causal_links, neighbor_states)
             traj.append(state)
         all_trajectories.append(traj)
 
@@ -288,16 +380,42 @@ def marginalize_with_uncertainty(
     from collections import Counter
     risk_profile = Counter(profiles).most_common(1)[0][0]
 
-    return {
+    # Shock detection: widen CI when current state has structural breaks
+    shock_mult = 1.0
+    shock_summary = ""
+    try:
+        from world_state.shock_detector import detect_shocks, get_shock_multiplier, get_shock_summary
+        shocks = detect_shocks(entity_name)
+        shock_mult = get_shock_multiplier(shocks)
+        shock_summary = get_shock_summary(shocks)
+        if shock_mult > 1.0:
+            half_range = (p_hi - p_lo) / 2.0
+            p_lo = max(0.01, p_mean - half_range * shock_mult)
+            p_hi = min(0.99, p_mean + half_range * shock_mult)
+            logger.info(
+                "trajectory[%s]: shock multiplier=%.1f — CI widened to [%.3f, %.3f]",
+                entity_name, shock_mult, p_lo, p_hi,
+            )
+    except Exception as e:
+        logger.debug("trajectory: shock detection skipped: %s", e)
+
+    ci_method = "var_monte_carlo" if any(
+        load_model(_entity_id(entity_name), d) is not None
+        and load_model(_entity_id(entity_name), d).get("type") == "var"
+        for d in ALL_DOMAINS
+    ) else "random_walk_monte_carlo"
+    if shock_mult > 1.0:
+        ci_method += f"+shock_x{shock_mult:.1f}"
+
+    result = {
         "p_trajectory":  round(min(0.99, p_mean), 4),
         "p_mean":        round(min(0.99, p_mean), 4),
         "p_lo":          round(max(0.01, p_lo),   4),
         "p_hi":          round(min(0.99, p_hi),   4),
         "n_samples":     len(traj_dist),
         "risk_profile":  risk_profile,
-        "trajectory_ci_method": "var_monte_carlo" if any(
-            load_model(_entity_id(entity_name), d) is not None
-            and load_model(_entity_id(entity_name), d).get("type") == "var"
-            for d in ALL_DOMAINS
-        ) else "random_walk_monte_carlo",
+        "trajectory_ci_method": ci_method,
     }
+    if shock_summary:
+        result["shock_signals"] = shock_summary
+    return result

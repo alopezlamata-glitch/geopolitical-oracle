@@ -292,6 +292,44 @@ def _check_db_consistency(
     return violations
 
 
+def correct_probability(probability: float, report: CoherenceReport) -> float:
+    """
+    Soft auto-correction: nudge `probability` toward coherence.
+
+    Strategy per violation type:
+      negation:   split the excess equally → nudge DOWN by half the gap
+      entailment: implied probability too low → nudge UP by half the gap
+
+    Never moves by more than MAX_CORRECTION = 0.12 in total.
+    Correction is weighted by severity (error → 0.5 scale, warning → 0.25).
+
+    Returns corrected probability in [0.01, 0.99].
+    """
+    MAX_CORRECTION = 0.12
+
+    total_nudge = 0.0
+    for v in report.violations:
+        if v.suggested_range is None:
+            continue
+
+        lo, hi = v.suggested_range
+        midpoint = (lo + hi) / 2.0
+        raw_nudge = midpoint - probability
+        scale = 0.5 if v.severity == "error" else 0.25
+        total_nudge += raw_nudge * scale
+
+    total_nudge = max(-MAX_CORRECTION, min(MAX_CORRECTION, total_nudge))
+
+    if abs(total_nudge) > 0.005:
+        logger.debug(
+            "coherence: auto-correct %s/%s %.3f → %.3f (nudge=%+.3f)",
+            report.entity_name, report.predicate,
+            probability, probability + total_nudge, total_nudge,
+        )
+
+    return round(max(0.01, min(0.99, probability + total_nudge)), 4)
+
+
 def format_coherence_output(report: CoherenceReport) -> str:
     """Format coherence report for CLI output."""
     if report.is_consistent and not report.violations:

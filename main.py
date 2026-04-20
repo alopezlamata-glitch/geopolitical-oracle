@@ -357,10 +357,10 @@ def cmd_predict(args) -> None:
     attribution = compute_shap_attribution(features, provenance, events_by_id)
     drift_flags = detect_drift(features)
 
-    # ── Step 5b: Coherence check (Phase 3 world model) ───────────────────────
+    # ── Step 5b: Coherence check + auto-correction (Phase 3 world model) ───────
     coherence_output = ""
     try:
-        from world_state.coherence import check, register, format_coherence_output
+        from world_state.coherence import check, register, correct_probability, format_coherence_output
         final_p = prediction.get("calibrated_prob", 0.5)
         coherence_report = check(
             entity_name=country or pq.subject or "",
@@ -369,6 +369,18 @@ def cmd_predict(args) -> None:
             deadline=pq.deadline,
             event_family=pq.event_family,
         )
+        # Apply soft auto-correction when violations exist
+        if coherence_report.violations:
+            corrected_p = correct_probability(final_p, coherence_report)
+            if corrected_p != final_p:
+                prediction["p_before_coherence"] = final_p
+                prediction["calibrated_prob"]    = corrected_p
+                prediction["answer"] = "YES" if corrected_p >= 0.5 else "NO"
+                logger.info(
+                    "coherence: auto-corrected %.3f → %.3f (%d violation(s))",
+                    final_p, corrected_p, len(coherence_report.violations),
+                )
+                final_p = corrected_p
         # Register so future predictions in this session can check against this
         register(
             entity_name=country or pq.subject or "",

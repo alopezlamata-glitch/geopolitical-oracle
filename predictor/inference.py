@@ -350,6 +350,8 @@ def _enrich_with_trajectory(
         result["trajectory_risk_profile"] = traj_result.get("risk_profile")
         result["trajectory_consistency"] = round(consistency, 3)
         result["trajectory_n_samples"]  = traj_result.get("n_samples", 0)
+        if traj_result.get("shock_signals"):
+            result["shock_signals"] = traj_result["shock_signals"]
 
         # ── Multi-horizon sub-forecasts ────────────────────────────────────────
         for short_h in (7, 30):

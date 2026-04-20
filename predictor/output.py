@@ -157,12 +157,21 @@ def format_output(
                 lines.append(row(f"    30d → {p_30d:.3f}"))
             lines.append(row(f"    {(deadline_days if (deadline_days := prediction.get('_horizon_days')) else '?')}d  → {traj_p:.3f}  (full horizon)"))
 
+    # ── Shock signals (from trajectory shock detector) ────────────────────────
+    shock_signals = prediction.get("shock_signals")
+    if shock_signals:
+        lines.append(row(""))
+        lines.append(row(f"  ⚡ SHOCK DETECTED: {shock_signals[:W-20]}"))
+
     # ── Coherence (Phase 3) ───────────────────────────────────────────────────
     coh_score = prediction.get("coherence_score")
     coh_viols = prediction.get("coherence_violations", 0)
+    p_before  = prediction.get("p_before_coherence")
     if coh_score is not None and coh_score < 0.95:
         lines.append(row(""))
         lines.append(row(f"  COHERENCE: score={coh_score:.2f}  violations={coh_viols}"))
+        if p_before is not None:
+            lines.append(row(f"  (auto-corrected: {p_before:.3f} → {prediction['calibrated_prob']:.3f})"))
 
     lines.append("└" + "─" * W + "┘")
     return "\n".join(lines)
