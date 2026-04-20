@@ -37,6 +37,33 @@ _COUNTRY_ALIASES: dict[str, str] = {
     "mali": "Mali", "niger": "Niger",
     "gaza": "Palestine", "west bank": "Palestine", "palestine": "Palestine",
     "lebanon": "Lebanon", "hezbollah": "Lebanon",
+    # Europe
+    "spain": "Spain", "spanish": "Spain", "sanchez": "Spain",
+    "france": "France", "french": "France", "macron": "France",
+    "germany": "Germany", "german": "Germany", "scholz": "Germany", "merz": "Germany",
+    "italy": "Italy", "italian": "Italy", "meloni": "Italy",
+    "uk": "United Kingdom", "britain": "United Kingdom", "british": "United Kingdom",
+    "starmer": "United Kingdom", "sunak": "United Kingdom",
+    "poland": "Poland", "polish": "Poland", "tusk": "Poland",
+    "hungary": "Hungary", "orban": "Hungary",
+    "turkey": "Turkey", "erdogan": "Turkey", "turkish": "Turkey",
+    "greece": "Greece", "greek": "Greece",
+    # Americas
+    "trump": "United States", "harris": "United States", "biden": "United States",
+    "powell": "United States", "fed ": "United States", "federal reserve": "United States",
+    "brazil": "Brazil", "lula": "Brazil", "brazilian": "Brazil",
+    "argentina": "Argentina", "milei": "Argentina",
+    "mexico": "Mexico", "sheinbaum": "Mexico",
+    # Asia / Pacific
+    "modi": "India", "indian": "India",
+    "xi jinping": "China", "xi ": "China",
+    "japan": "Japan", "japanese": "Japan", "kishida": "Japan", "ishiba": "Japan",
+    "south korea": "South Korea", "korean": "South Korea", "yoon": "South Korea",
+    # Middle East / Africa
+    "netanyahu": "Israel", "gaza": "Palestine",
+    "mbs": "Saudi Arabia", "saudi": "Saudi Arabia",
+    "zelensky": "Ukraine", "zelenskyy": "Ukraine",
+    "putin": "Russia",
 }
 
 
@@ -119,14 +146,17 @@ async def collect_acled(session: aiohttp.ClientSession, query: str, country: Opt
     # ACLED data lags ~13 months; use 420-day lookback to capture latest available data
     start = now - timedelta(days=420)
 
+    email = os.environ.get("ACLED_EMAIL", "")
     params = {
+        "key": api_key,
+        "email": email,
         "country": target_country,
         "limit": "200",
         "event_date": start.strftime('%Y-%m-%d'),
         "event_date_where": ">",
         "fields": "event_date|event_type|sub_event_type|actor1|actor2|country|location|fatalities|notes|latitude|longitude|source_scale|disorder_type",
     }
-    headers = {"Authorization": f"Bearer {api_key}", "User-Agent": "geopolitical-oracle/1.0"}
+    headers = {"User-Agent": "geopolitical-oracle/1.0"}
 
     async with session.get(_BASE_URL, params=params, headers=headers, timeout=_TIMEOUT) as resp:
         if resp.status == 403:

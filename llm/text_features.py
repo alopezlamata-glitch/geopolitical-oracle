@@ -48,11 +48,24 @@ LLM_FEATURE_NAMES = [
 ]
 
 _SYSTEM_PROMPT = (
-    "You are a geopolitical analyst. "
+    "You are a geopolitical analyst with expertise in conflict forecasting. "
     "Extract numerical risk indicators from news headlines. "
     "Output only valid JSON with float values between 0.0 and 1.0. "
+    "Be calibrated: use the full range, not just 0.5. "
     "Do not explain. Do not add keys other than those requested."
 )
+
+_JSON_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "threat_level":    {"type": "number"},
+        "escalation":      {"type": "number"},
+        "deescalation":    {"type": "number"},
+        "event_certainty": {"type": "number"},
+        "actor_hostility": {"type": "number"},
+    },
+    "required": ["threat_level", "escalation", "deescalation", "event_certainty", "actor_hostility"],
+}
 
 _PROMPT_TEMPLATE = """\
 Question to forecast: {question}
@@ -60,12 +73,17 @@ Question to forecast: {question}
 Recent geopolitical news ({n} headlines):
 {headlines}
 
-Rate each indicator from 0.0 to 1.0 based on the news:
+Rate each indicator from 0.0 to 1.0 based on the news above:
 - threat_level: How dangerous/threatening is the situation? (0=peaceful, 1=active armed conflict)
-- escalation: Is the situation escalating? (0=calming down, 1=rapidly escalating)
-- deescalation: Are there peace or resolution signals? (0=none visible, 1=strong signals)
+- escalation: Is the situation escalating right now? (0=calming down, 1=rapidly escalating)
+- deescalation: Are there peace or resolution signals? (0=none visible, 1=strong ceasefire/deal)
 - event_certainty: How confirmed/verified are these events? (0=rumors/unverified, 1=officially confirmed)
 - actor_hostility: How hostile are the main actors toward each other? (0=cooperative, 1=openly hostile)
+
+Calibration examples:
+- "Ceasefire agreement signed by both parties" -> threat_level=0.2, escalation=0.1, deescalation=0.9
+- "Artillery strikes reported near capital city" -> threat_level=0.85, escalation=0.8, actor_hostility=0.9
+- "Diplomats hold preliminary talks, no agreement" -> escalation=0.3, deescalation=0.35, event_certainty=0.7
 
 Respond with JSON only:
 {{"threat_level": 0.0, "escalation": 0.0, "deescalation": 0.0, "event_certainty": 0.0, "actor_hostility": 0.0}}"""
@@ -165,6 +183,7 @@ async def _extract_async(
         prompt=prompt,
         system=_SYSTEM_PROMPT,
         temperature=0.0,
+        schema=_JSON_SCHEMA,
     )
     latency_ms = (time.monotonic() - t0) * 1000
 

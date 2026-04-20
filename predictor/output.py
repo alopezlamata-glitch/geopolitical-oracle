@@ -52,6 +52,7 @@ def format_output(
     features: dict[str, float],
     n_events: int,
     drift_flags: list[str],
+    scenarios: Optional[dict] = None,
 ) -> str:
     p = prediction["calibrated_prob"]
     raw = prediction["raw_prob"]
@@ -172,6 +173,21 @@ def format_output(
         lines.append(row(f"  COHERENCE: score={coh_score:.2f}  violations={coh_viols}"))
         if p_before is not None:
             lines.append(row(f"  (auto-corrected: {p_before:.3f} → {prediction['calibrated_prob']:.3f})"))
+
+    # ── Scenario branches (escalation / baseline / de-escalation) ─────────────
+    if scenarios:
+        lines.append(row(""))
+        lines.append(row("  SCENARIO BRANCHES"))
+        for scenario_name in ("escalation", "baseline", "deescalation"):
+            s = scenarios.get(scenario_name)
+            if s is None:
+                continue
+            bar_len = int(s.p_event * 20)
+            bar = "█" * bar_len + "░" * (20 - bar_len)
+            ci_str = f"[{s.p_lo:.2f},{s.p_hi:.2f}]"
+            lines.append(row(
+                f"  {s.label}: {s.p_event:.3f} {ci_str}  {bar}  ({s.risk_profile})"
+            ))
 
     lines.append("└" + "─" * W + "┘")
     return "\n".join(lines)

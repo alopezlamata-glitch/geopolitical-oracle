@@ -52,7 +52,7 @@ _REGISTERED_DOMAINS: list[ModelDomain] = [
         description="XGBoost conflict/escalation classifier (ICEWS 2012-2022)",
         valid_families={"conflict"},
         valid_subject_types={"country"},
-        max_horizon_days=365,   # geopolitical questions span months to years
+        max_horizon_days=365,
         valid_predicates={
             "military_escalation", "coup", "ceasefire", "nuclear_event",
         },
@@ -61,23 +61,28 @@ _REGISTERED_DOMAINS: list[ModelDomain] = [
             "Not valid for political, legal, entertainment, or economic questions."
         ),
     ),
-    # Future entries (not yet trained):
-    # ModelDomain(
-    #     model_id="political_survival_v1",
-    #     description="Political leader survival model",
-    #     valid_families={"political"},
-    #     valid_subject_types={"person"},
-    #     max_horizon_days=180,
-    #     valid_predicates={"resign", "impeach", "government_collapse"},
-    # ),
-    # ModelDomain(
-    #     model_id="entertainment_events_v1",
-    #     description="Entertainment events (tours, releases)",
-    #     valid_families={"entertainment"},
-    #     valid_subject_types={"artist", "person"},
-    #     max_horizon_days=365,
-    #     valid_predicates={"perform", "visit", "music_release", "retire"},
-    # ),
+    ModelDomain(
+        model_id="ollama_reasoning_v1",
+        description="Ollama LLM reasoning predictor for political, economic, and legal events",
+        valid_families={"political", "economic", "legal"},
+        valid_subject_types={"person", "country", "organization", "unknown", "other"},
+        max_horizon_days=730,
+        valid_predicates=set(),   # accepts any predicate in the family
+        notes=(
+            "Uses local Ollama LLM (llama3.x/qwen2.5) for superforecaster-style reasoning. "
+            "Non-fatal: falls back to market prior if Ollama unavailable. "
+            "Accumulates labeled outcomes for future XGBoost domain models."
+        ),
+    ),
+    ModelDomain(
+        model_id="ollama_reasoning_v1",
+        description="Entertainment events via Ollama reasoning",
+        valid_families={"entertainment"},
+        valid_subject_types={"artist", "person", "unknown", "other"},
+        max_horizon_days=365,
+        valid_predicates={"perform", "visit", "music_release", "retire", "tour"},
+        notes="Ollama reasoning for entertainment/cultural events.",
+    ),
 ]
 
 

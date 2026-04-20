@@ -1,0 +1,127 @@
+{
+  "_comment": "Historical base rates per predicate. rate_per_Nd = P(event occurs in N days) derived from academic literature.",
+  "predicates": {
+    "resign": {
+      "rate_per_180d": 0.08,
+      "source": "Archigos leader dataset 1875-2015 (Goemans et al.)",
+      "notes": "~8% of incumbent leaders exit per 6-month window; higher for parliamentary systems"
+    },
+    "removal": {
+      "rate_per_180d": 0.06,
+      "source": "Archigos leader dataset",
+      "notes": "Forced removal (vote of no confidence, impeachment); distinct from voluntary resignation"
+    },
+    "election_win": {
+      "rate_per_180d": 0.50,
+      "source": "prior — binary outcome by definition",
+      "notes": "By definition either wins or loses; 0.50 prior, strong signal moves this"
+    },
+    "coup": {
+      "rate_per_365d": 0.04,
+      "rate_per_180d": 0.02,
+      "source": "Powell & Thyne coup dataset 1950-2020",
+      "notes": "~4% annual coup attempt rate in historically coup-prone states; adjust by fragility"
+    },
+    "ceasefire": {
+      "rate_per_30d": 0.12,
+      "rate_per_180d": 0.45,
+      "source": "ICEWS 2012-2022 + UCDP Peace Agreement dataset",
+      "notes": "Conditional on active armed conflict; very high variation by conflict stage"
+    },
+    "military_escalation": {
+      "rate_per_30d": 0.35,
+      "rate_per_180d": 0.75,
+      "source": "ICEWS 2012-2022 conflict windows",
+      "notes": "Conditional on existing low-level hostilities; high base rate reflects ICEWS labeling"
+    },
+    "nuclear_event": {
+      "rate_per_365d": 0.02,
+      "rate_per_180d": 0.01,
+      "source": "NTI Nuclear Security Index + historical incidents",
+      "notes": "Extremely rare; proxy: nuclear-armed state + crisis escalation ladder"
+    },
+    "interest_rate_change": {
+      "rate_per_meeting": 0.45,
+      "rate_per_180d": 0.72,
+      "source": "FOMC decision data 1994-2024 (Fed, ECB, BOE, BOJ aggregated)",
+      "notes": "Rate of policy rate change per meeting varies strongly with inflation regime"
+    },
+    "rate_hike": {
+      "rate_per_meeting": 0.28,
+      "rate_per_180d": 0.50,
+      "source": "FOMC 1994-2024"
+    },
+    "rate_cut": {
+      "rate_per_meeting": 0.20,
+      "rate_per_180d": 0.38,
+      "source": "FOMC 1994-2024"
+    },
+    "recession": {
+      "rate_per_365d": 0.15,
+      "rate_per_180d": 0.08,
+      "source": "NBER business cycle data 1945-2024",
+      "notes": "Unconditional annual probability; conditional on yield curve inversion: ~0.65 per year"
+    },
+    "default": {
+      "rate_per_365d": 0.05,
+      "rate_per_180d": 0.02,
+      "source": "S&P sovereign default study 2023",
+      "notes": "Sovereign default; conditional on debt stress: ~0.18/yr"
+    },
+    "extradition": {
+      "rate_per_180d": 0.12,
+      "source": "INTERPOL statistics + bilateral treaty literature",
+      "notes": "Conditional on outstanding request + treaty; execution often takes years"
+    },
+    "arrest": {
+      "rate_per_180d": 0.20,
+      "source": "ICC/ICJ case completion rates + domestic prosecution data",
+      "notes": "Conditional on active warrant; highly jurisdiction-dependent"
+    },
+    "indictment": {
+      "rate_per_180d": 0.18,
+      "source": "DOJ prosecution statistics 2010-2023",
+      "notes": "Conditional on active investigation; grand jury indictment rate ~90% when case is filed"
+    },
+    "conviction": {
+      "rate_per_180d": 0.25,
+      "source": "DOJ conviction statistics (federal cases go 90% conviction rate once indicted)",
+      "notes": "Conditional on indictment"
+    },
+    "perform": {
+      "rate_per_180d": 0.55,
+      "source": "Songkick/Bandsintown historical tour data (heuristic)",
+      "notes": "Major artists tour ~every 2 years; conditional on past tour patterns"
+    },
+    "visit": {
+      "rate_per_180d": 0.40,
+      "source": "prior — heuristic",
+      "notes": "Artist/celebrity visit to specific country; depends on visa, market, past presence"
+    },
+    "music_release": {
+      "rate_per_180d": 0.35,
+      "source": "RIAA release cadence data (heuristic)",
+      "notes": "Major artists release ~every 2-3 years; indie artists more frequent"
+    },
+    "retire": {
+      "rate_per_365d": 0.05,
+      "rate_per_180d": 0.03,
+      "source": "prior — heuristic for entertainment/sports retirement"
+    },
+    "tour": {
+      "rate_per_180d": 0.45,
+      "source": "Songkick historical tour data (heuristic)"
+    },
+    "unknown": {
+      "rate_per_180d": 0.15,
+      "source": "uninformative prior",
+      "notes": "Used when predicate not recognized; conservative center-of-prior"
+    }
+  },
+  "horizon_scaling": {
+    "method": "survival",
+    "formula": "P(event in N days) = 1 - (1 - rate_per_180d)^(N/180)",
+    "notes": "Assumes constant hazard (exponential survival). Approximation — real hazards are non-constant."
+  },
+  "reference_period_days": 180
+}

@@ -629,3 +629,119 @@ SELECT
 FROM entities e
 JOIN canonical_events ce ON list_contains(ce.actor_entity_ids, e.entity_id)
 WHERE ce.event_time >= current_timestamp - INTERVAL '90 days';
+
+
+-- =============================================================================
+-- LAYER 8 — World Model State
+-- Persistent entity state updated daily by scripts/update_world_state.py.
+-- This is the foundation of the large world model.
+-- =============================================================================
+
+CREATE TABLE IF NOT EXISTS world_state (
+    -- Identity
+    state_id            VARCHAR PRIMARY KEY,   -- sha256(entity_id || as_of_date)
+    entity_id           VARCHAR NOT NULL,
+    as_of_date          DATE NOT NULL,
+
+    -- Conflict / security features
+    military_count_7d       FLOAT NOT NULL DEFAULT 0.0,
+    military_count_30d      FLOAT NOT NULL DEFAULT 0.0,
+    protest_count_7d        FLOAT NOT NULL DEFAULT 0.0,
+    protest_count_30d       FLOAT NOT NULL DEFAULT 0.0,
+    diplomatic_count_7d     FLOAT NOT NULL DEFAULT 0.0,
+    ceasefire_count_7d      FLOAT NOT NULL DEFAULT 0.0,
+    sanction_count_7d       FLOAT NOT NULL DEFAULT 0.0,
+    military_intensity_7d   FLOAT NOT NULL DEFAULT 0.0,
+    protest_intensity_7d    FLOAT NOT NULL DEFAULT 0.0,
+    overall_intensity_7d    FLOAT NOT NULL DEFAULT 0.0,
+    military_accel          FLOAT NOT NULL DEFAULT 1.0,
+    protest_accel           FLOAT NOT NULL DEFAULT 1.0,
+    overall_accel           FLOAT NOT NULL DEFAULT 1.0,
+    avg_polarity_7d         FLOAT NOT NULL DEFAULT 0.0,
+    avg_polarity_30d        FLOAT NOT NULL DEFAULT 0.0,
+    tone_trend              FLOAT NOT NULL DEFAULT 0.0,
+    source_diversity_7d     FLOAT NOT NULL DEFAULT 0.0,
+    avg_independent_sources FLOAT NOT NULL DEFAULT 1.0,
+    has_military_7d         FLOAT NOT NULL DEFAULT 0.0,
+    has_ceasefire_7d        FLOAT NOT NULL DEFAULT 0.0,
+    escalation_index        FLOAT NOT NULL DEFAULT 0.0,
+    ceasefire_ratio_7d      FLOAT NOT NULL DEFAULT 0.0,
+    event_velocity_7d       FLOAT NOT NULL DEFAULT 1.0,
+    military_share_7d       FLOAT NOT NULL DEFAULT 0.0,
+
+    -- Political domain features
+    pol_resignation_signals FLOAT NOT NULL DEFAULT 0.0,
+    pol_approval_pressure   FLOAT NOT NULL DEFAULT 0.0,
+    pol_coalition_stability FLOAT NOT NULL DEFAULT 0.5,
+    pol_electoral_proximity FLOAT NOT NULL DEFAULT 0.0,
+    pol_judicial_pressure   FLOAT NOT NULL DEFAULT 0.0,
+
+    -- Economic domain features
+    eco_rate_change_prob    FLOAT NOT NULL DEFAULT 0.0,
+    eco_gdp_momentum        FLOAT NOT NULL DEFAULT 0.0,
+    eco_debt_stress         FLOAT NOT NULL DEFAULT 0.0,
+    eco_market_volatility   FLOAT NOT NULL DEFAULT 0.0,
+    eco_policy_uncertainty  FLOAT NOT NULL DEFAULT 0.0,
+
+    -- Structural features (from country_data / WB / V-Dem)
+    country_conflict_baserate FLOAT NOT NULL DEFAULT 0.15,
+    country_polity_norm       FLOAT NOT NULL DEFAULT 0.0,
+    country_mil_spending_norm FLOAT NOT NULL DEFAULT 0.15,
+    wgi_pol_stability         FLOAT,
+    wgi_gov_effectiveness     FLOAT,
+    wgi_rule_of_law           FLOAT,
+    fred_vix                  FLOAT,
+    fred_yield_spread         FLOAT,
+
+    -- Transition metadata
+    smoothing_alpha         FLOAT NOT NULL DEFAULT 0.3,
+    causal_inflow           JSON,
+    n_events_used           INTEGER NOT NULL DEFAULT 0,
+    data_completeness       FLOAT NOT NULL DEFAULT 1.0,
+    sources_used            VARCHAR[],
+    updater_version         VARCHAR NOT NULL DEFAULT 'v1',
+
+    -- Validity window
+    computed_at             TIMESTAMPTZ NOT NULL,
+    valid_from              TIMESTAMPTZ NOT NULL,
+    valid_to                TIMESTAMPTZ,
+
+    CONSTRAINT world_state_entity_date UNIQUE (entity_id, as_of_date)
+);
+
+CREATE INDEX IF NOT EXISTS idx_world_state_entity_date
+    ON world_state (entity_id, as_of_date DESC);
+
+CREATE INDEX IF NOT EXISTS idx_world_state_date
+    ON world_state (as_of_date DESC);
+
+-- Append-only history for time-series analysis and backtesting
+CREATE TABLE IF NOT EXISTS world_state_history (
+    history_id          VARCHAR PRIMARY KEY,
+    entity_id           VARCHAR NOT NULL,
+    as_of_date          DATE NOT NULL,
+    computed_at         TIMESTAMPTZ NOT NULL,
+    features            JSON NOT NULL,
+    delta_from_prior    JSON,
+    prior_state_date    DATE,
+    causal_inflow_summary JSON,
+    sources_used        VARCHAR[],
+    n_events_used       INTEGER NOT NULL DEFAULT 0,
+    data_completeness   FLOAT NOT NULL DEFAULT 1.0,
+    updater_version     VARCHAR NOT NULL DEFAULT 'v1'
+);
+
+CREATE INDEX IF NOT EXISTS idx_wsh_entity_date
+    ON world_state_history (entity_id, as_of_date DESC);
+
+-- Current world state view (latest valid row per entity)
+CREATE OR REPLACE VIEW current_world_state AS
+SELECT ws.*
+FROM world_state ws
+INNER JOIN (
+    SELECT entity_id, MAX(as_of_date) AS max_date
+    FROM world_state
+    WHERE valid_to IS NULL
+    GROUP BY entity_id
+) latest ON ws.entity_id = latest.entity_id AND ws.as_of_date = latest.max_date
+WHERE ws.valid_to IS NULL;

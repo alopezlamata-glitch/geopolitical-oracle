@@ -396,8 +396,24 @@ def cmd_predict(args) -> None:
     except Exception as e:
         logger.debug("coherence check skipped: %s", e)
 
+    # ── Step 5c: Scenario generation (escalation / baseline / de-escalation) ──
+    scenarios = {}
+    if country and deadline_dt is not None:
+        try:
+            from world_state.scenario_engine import generate_scenarios
+            horizon_days_sc = max(1, (deadline_dt - as_of_time).days)
+            scenarios = generate_scenarios(
+                entity_name=country,
+                predicate=pq.predicate or "unknown",
+                event_family=pq.event_family,
+                horizon_days=horizon_days_sc,
+                n_samples=80,
+            )
+        except Exception as e:
+            logger.debug("scenario generation skipped: %s", e)
+
     # ── Step 6: Format + print ────────────────────────────────────────────────
-    output = format_output(question, prediction, attribution, features, len(deduped), drift_flags)
+    output = format_output(question, prediction, attribution, features, len(deduped), drift_flags, scenarios=scenarios)
     sys.stdout.buffer.write(("\n" + output + "\n").encode("utf-8", errors="replace"))
     sys.stdout.buffer.flush()
     if coherence_output:
@@ -605,6 +621,25 @@ def cmd_auto_resolve(args) -> None:
         limit=args.limit,
         min_confidence=args.min_confidence,
     )
+
+
+def cmd_global_risk(args) -> None:
+    """Compute and display the global geopolitical risk index across all entities."""
+    from world_state.global_risk import run as global_risk_run
+    global_risk_run()
+
+
+def cmd_backfill_world_state(args) -> None:
+    """Seed synthetic world_state_history for all entities so VAR models can be fitted."""
+    from scripts.backfill_world_state import run as backfill_run
+    results = backfill_run(
+        n_weeks=args.weeks,
+        skip_existing=not args.no_skip,
+        fit_after=not args.no_fit,
+        dry_run=args.dry_run,
+        entity_names=args.entity or None,
+    )
+    print(f"\nBackfill complete: {sum(results.values())} rows across {len(results)} entities")
 
 
 def cmd_update_world_state(args) -> None:
@@ -835,6 +870,23 @@ def main():
     p_bt.set_defaults(func=lambda a: __import__(
         "scripts.backtest_causal", fromlist=["run"]
     ).run(save=not a.no_save))
+
+    p_gr = sub.add_parser(
+        "global-risk",
+        help="Compute global geopolitical risk index across all entities",
+    )
+    p_gr.set_defaults(func=cmd_global_risk)
+
+    p_bfws = sub.add_parser(
+        "backfill-world-state",
+        help="Seed synthetic world_state_history for all entities (enables VAR fitting)",
+    )
+    p_bfws.add_argument("--weeks",   type=int,  default=26, help="Weeks of history to generate (default: 26)")
+    p_bfws.add_argument("--no-skip", action="store_true",   help="Re-insert even if history already exists")
+    p_bfws.add_argument("--no-fit",  action="store_true",   help="Skip VAR model refitting after insert")
+    p_bfws.add_argument("--dry-run", action="store_true",   help="Simulate without writing")
+    p_bfws.add_argument("--entity",  nargs="+", metavar="NAME", help="Limit to these entities")
+    p_bfws.set_defaults(func=cmd_backfill_world_state)
 
     args = parser.parse_args()
     args.func(args)

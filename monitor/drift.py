@@ -52,7 +52,7 @@ def detect_drift(features: dict[str, float]) -> list[str]:
     history = _load_history()
     history.append({
         "timestamp": datetime.now(timezone.utc).isoformat(),
-        "features": {k: float(v) for k, v in features.items()},
+        "features": {k: float(v) for k, v in features.items() if isinstance(v, (int, float))},
     })
     _save_history(history)
 

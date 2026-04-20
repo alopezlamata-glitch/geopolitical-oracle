@@ -41,15 +41,21 @@ def _clamp(x: float, lo: float, hi: float) -> float:
 
 def _sample_high_risk() -> dict:
     """Scenario: active conflict / high escalation probability."""
+    mil7 = random.randint(3, 15)
+    mil30 = random.randint(8, 40)
+    cease7 = random.randint(0, 1)
+    pro7 = random.randint(1, 8)
+    pro30 = random.randint(2, 20)
+    total7 = mil7 + pro7 + random.randint(0, 5)
+    total30 = mil30 + pro30 + random.randint(0, 15)
     return {
-        "military_count_7d": random.randint(3, 15),
-        "military_count_30d": random.randint(8, 40),
-        "protest_count_7d": random.randint(1, 8),
-        "protest_count_30d": random.randint(2, 20),
+        "military_count_7d": mil7,
+        "military_count_30d": mil30,
+        "protest_count_7d": pro7,
+        "protest_count_30d": pro30,
         "diplomatic_count_7d": random.randint(0, 3),
-        "ceasefire_count_7d": random.randint(0, 1),
+        "ceasefire_count_7d": cease7,
         "sanction_count_7d": random.randint(1, 5),
-        "political_crisis_count_7d": random.randint(1, 4),
         "military_intensity_7d": random.uniform(2.0, 8.0),
         "protest_intensity_7d": random.uniform(0.5, 3.0),
         "overall_intensity_7d": random.uniform(3.0, 12.0),
@@ -61,28 +67,39 @@ def _sample_high_risk() -> dict:
         "tone_trend": random.uniform(-0.4, 0.0),
         "source_diversity_7d": random.uniform(0.4, 1.0),
         "avg_independent_sources": random.uniform(1.5, 3.0),
-        "avg_contradiction_score": random.uniform(0.0, 0.3),
-        "fatalities_7d": random.randint(10, 500),
         "has_military_7d": 1.0,
-        "has_ceasefire_7d": 0.0,
+        "has_ceasefire_7d": float(cease7 > 0),
         "escalation_index": random.uniform(2.0, 8.0),
-        "metaculus_p": _clamp(random.gauss(0.72, 0.1), 0.05, 0.95),
-        "polymarket_p": _clamp(random.gauss(0.68, 0.12), 0.05, 0.95),
-        "market_available": 1.0,
+        # Derived ratio features (v3)
+        "ceasefire_ratio_7d": cease7 / (mil7 + 0.1),
+        "event_velocity_7d": total7 / (total30 / 4.3 + 0.1),
+        "military_share_7d": mil7 / (total7 + 0.1),
+        # Structural features: high-conflict country profile
+        "country_conflict_baserate": _clamp(random.gauss(0.70, 0.15), 0.2, 0.99),
+        "country_polity_norm": _clamp(random.gauss(-0.3, 0.2), -1.0, 0.5),
+        "country_mil_spending_norm": _clamp(random.gauss(0.45, 0.15), 0.1, 0.9),
     }
 
 
 def _sample_low_risk() -> dict:
     """Scenario: stable / diplomatic / ceasefire-trending."""
+    mil7 = random.randint(0, 2)
+    mil30 = random.randint(0, 5)
+    cease7 = random.randint(1, 4)
+    pro7 = random.randint(0, 3)
+    pro30 = random.randint(0, 8)
+    dipl7 = random.randint(2, 8)
+    total7 = mil7 + pro7 + dipl7
+    total30 = mil30 + pro30 + random.randint(4, 20)
+    has_mil = float(random.random() < 0.15)
     return {
-        "military_count_7d": random.randint(0, 2),
-        "military_count_30d": random.randint(0, 5),
-        "protest_count_7d": random.randint(0, 3),
-        "protest_count_30d": random.randint(0, 8),
-        "diplomatic_count_7d": random.randint(2, 8),
-        "ceasefire_count_7d": random.randint(1, 4),
+        "military_count_7d": mil7,
+        "military_count_30d": mil30,
+        "protest_count_7d": pro7,
+        "protest_count_30d": pro30,
+        "diplomatic_count_7d": dipl7,
+        "ceasefire_count_7d": cease7,
         "sanction_count_7d": random.randint(0, 2),
-        "political_crisis_count_7d": random.randint(0, 1),
         "military_intensity_7d": random.uniform(0.0, 1.0),
         "protest_intensity_7d": random.uniform(0.0, 0.8),
         "overall_intensity_7d": random.uniform(0.2, 2.0),
@@ -94,28 +111,38 @@ def _sample_low_risk() -> dict:
         "tone_trend": random.uniform(0.0, 0.4),
         "source_diversity_7d": random.uniform(0.1, 0.5),
         "avg_independent_sources": random.uniform(1.0, 2.0),
-        "avg_contradiction_score": random.uniform(0.0, 0.2),
-        "fatalities_7d": random.randint(0, 5),
-        "has_military_7d": float(random.random() < 0.15),
+        "has_military_7d": has_mil,
         "has_ceasefire_7d": float(random.random() < 0.6),
         "escalation_index": random.uniform(-1.0, 0.5),
-        "metaculus_p": _clamp(random.gauss(0.22, 0.1), 0.05, 0.95),
-        "polymarket_p": _clamp(random.gauss(0.25, 0.12), 0.05, 0.95),
-        "market_available": float(random.random() < 0.7),
+        # Derived ratio features (v3)
+        "ceasefire_ratio_7d": cease7 / (mil7 + 0.1),
+        "event_velocity_7d": total7 / (total30 / 4.3 + 0.1),
+        "military_share_7d": mil7 / (total7 + 0.1),
+        # Structural features: stable country profile
+        "country_conflict_baserate": _clamp(random.gauss(0.10, 0.10), 0.0, 0.4),
+        "country_polity_norm": _clamp(random.gauss(0.65, 0.2), 0.0, 1.0),
+        "country_mil_spending_norm": _clamp(random.gauss(0.15, 0.08), 0.05, 0.35),
     }
 
 
 def _sample_uncertain() -> dict:
     """Scenario: mixed signals — could go either way."""
+    mil7 = random.randint(1, 5)
+    mil30 = random.randint(3, 15)
+    cease7 = random.randint(0, 2)
+    pro7 = random.randint(1, 5)
+    pro30 = random.randint(2, 12)
+    dipl7 = random.randint(1, 5)
+    total7 = mil7 + pro7 + dipl7
+    total30 = mil30 + pro30 + random.randint(3, 12)
     return {
-        "military_count_7d": random.randint(1, 5),
-        "military_count_30d": random.randint(3, 15),
-        "protest_count_7d": random.randint(1, 5),
-        "protest_count_30d": random.randint(2, 12),
-        "diplomatic_count_7d": random.randint(1, 5),
-        "ceasefire_count_7d": random.randint(0, 2),
+        "military_count_7d": mil7,
+        "military_count_30d": mil30,
+        "protest_count_7d": pro7,
+        "protest_count_30d": pro30,
+        "diplomatic_count_7d": dipl7,
+        "ceasefire_count_7d": cease7,
         "sanction_count_7d": random.randint(0, 3),
-        "political_crisis_count_7d": random.randint(0, 2),
         "military_intensity_7d": random.uniform(0.5, 3.0),
         "protest_intensity_7d": random.uniform(0.3, 2.0),
         "overall_intensity_7d": random.uniform(1.0, 5.0),
@@ -127,20 +154,23 @@ def _sample_uncertain() -> dict:
         "tone_trend": random.uniform(-0.2, 0.2),
         "source_diversity_7d": random.uniform(0.2, 0.7),
         "avg_independent_sources": random.uniform(1.0, 2.5),
-        "avg_contradiction_score": random.uniform(0.1, 0.5),
-        "fatalities_7d": random.randint(0, 30),
         "has_military_7d": float(random.random() < 0.5),
         "has_ceasefire_7d": float(random.random() < 0.3),
         "escalation_index": random.uniform(-0.5, 2.0),
-        "metaculus_p": _clamp(random.gauss(0.48, 0.15), 0.05, 0.95),
-        "polymarket_p": _clamp(random.gauss(0.50, 0.15), 0.05, 0.95),
-        "market_available": float(random.random() < 0.5),
+        # Derived ratio features (v3)
+        "ceasefire_ratio_7d": cease7 / (mil7 + 0.1),
+        "event_velocity_7d": total7 / (total30 / 4.3 + 0.1),
+        "military_share_7d": mil7 / (total7 + 0.1),
+        # Structural features: medium-conflict country profile
+        "country_conflict_baserate": _clamp(random.gauss(0.35, 0.20), 0.05, 0.85),
+        "country_polity_norm": _clamp(random.gauss(0.10, 0.35), -1.0, 1.0),
+        "country_mil_spending_norm": _clamp(random.gauss(0.28, 0.15), 0.05, 0.65),
     }
 
 
 def _compute_outcome(features: dict) -> int:
     """
-    Simulate a ground-truth outcome using a logistic model of the features.
+    Simulate a ground-truth outcome using a logistic model of the v3 features.
     This ensures the training data has a learnable signal.
     """
     log_odds = (
@@ -151,21 +181,16 @@ def _compute_outcome(features: dict) -> int:
         - 0.7  * features["avg_polarity_7d"]       # negative polarity → higher risk
         - 0.9  * features["ceasefire_count_7d"]
         + 0.5  * features["sanction_count_7d"]
-        + 0.3  * features["political_crisis_count_7d"]
-        + 0.0003 * features["fatalities_7d"]
         + 0.4  * features["has_military_7d"]
         - 0.5  * features["has_ceasefire_7d"]
+        - 1.5  * features["ceasefire_ratio_7d"]    # many ceasefires vs conflict → stable
+        + 0.6  * features["military_share_7d"]     # military-dominated news → risk
+        + 0.4  * features["event_velocity_7d"]     # accelerating events → risk
+        + 1.2  * features["country_conflict_baserate"]  # historical baserate
+        - 0.8  * features["country_polity_norm"]   # democracy → more stable
+        + 0.5  * features["country_mil_spending_norm"]  # high military spending → risk
         - 3.0  # intercept (base rate ~4% if all features = 0)
     )
-
-    # Add market signal if available
-    if features["market_available"] > 0.5:
-        market_avg = (
-            (features["metaculus_p"] + features["polymarket_p"]) / 2
-            if features["metaculus_p"] > 0 and features["polymarket_p"] > 0
-            else max(features["metaculus_p"], features["polymarket_p"])
-        )
-        log_odds += 0.7 * _logit(market_avg)
 
     p = _sigmoid(log_odds)
     # Inject noise: outcome is stochastic given the features
