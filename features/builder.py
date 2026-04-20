@@ -62,6 +62,19 @@ _DECAY_HALFLIFE_DAYS = 7.0
 #     military_share_7d   — military_count_7d / (total_events_7d + 0.1)
 #                           conflict concentration: how military-dominated is the news?
 
+# Features where builder.py's formula (decay-weighted) differs semantically from
+# update_world_state.py (unweighted mean). World-state values are used only as
+# gap-fill (when builder computed 0.0 — no relevant events), never blended.
+# This prevents mixing two computations with incompatible semantics under the same
+# feature name. update_world_state.py is deliberately NOT changed: its unweighted
+# formulas are appropriate for EMA-smoothed snapshots and VAR model fitting.
+_BUILDER_CANONICAL_FEATURES = frozenset({
+    "military_intensity_7d", "protest_intensity_7d", "overall_intensity_7d",
+    "avg_polarity_7d", "avg_polarity_30d", "tone_trend",
+    "escalation_index", "event_velocity_7d",
+    "military_accel", "protest_accel", "overall_accel",
+})
+
 _FEATURE_NAMES = [
     # ── Event-derived features (21) ──────────────────────────────────────────
     "military_count_7d", "military_count_30d",
@@ -331,29 +344,46 @@ def build_features(
         staleness = ctx.get("_world_state_staleness_days", 99)
         n_enriched = n_blended = 0
 
+        n_skipped_canonical = 0
         for fname in _FEATURE_NAMES:
             ctx_val = ctx.get(fname)
             if ctx_val is None:
                 continue
             current = feat.get(fname, 0.0)
             if current == 0.0:
+                # Gap-fill: builder had no events → world state supplies the value.
+                # Safe for all features regardless of formula divergence.
                 feat[fname] = float(ctx_val)
                 n_enriched += 1
-            else:
+            elif fname not in _BUILDER_CANONICAL_FEATURES:
+                # Blend only features where both sides use compatible formulas
+                # (counts, booleans, structural). Semantically coherent blend.
                 feat[fname] = round((1.0 - ws_w) * current + ws_w * float(ctx_val), 6)
                 n_blended += 1
+            else:
+                # Builder-canonical feature (decay-weighted formula) — keep builder's
+                # value; do not blend with world_state's unweighted mean.
+                n_skipped_canonical += 1
 
         # Neighbour + relation keys (informational, not in _FEATURE_NAMES)
-        for k, v in ctx.items():
-            if k.startswith("_") or k in _FEATURE_NAMES or k in _STRUCT:
-                continue
+        # Use explicit namespaces when available (EntityContext); fall back to
+        # prefix-checking for plain dicts (backward compatibility).
+        if hasattr(ctx, "namespaces"):
+            extra_items = list(ctx.namespaces.get("relations", {}).items()) + \
+                          list(ctx.namespaces.get("neighbors", {}).items())
+        else:
+            extra_items = [
+                (k, v) for k, v in ctx.items()
+                if not k.startswith("_") and k not in _FEATURE_NAMES and k not in _STRUCT
+            ]
+        for k, v in extra_items:
             if feat.get(k, 0.0) == 0.0:
                 feat[k] = v
 
-        if n_enriched or n_blended:
+        if n_enriched or n_blended or n_skipped_canonical:
             logger.info(
-                "world_model: %s  filled=%d blended=%d  staleness=%sd ws_w=%.2f",
-                country, n_enriched, n_blended, staleness, ws_w,
+                "world_model: %s  filled=%d blended=%d skipped_canonical=%d  staleness=%sd ws_w=%.2f",
+                country, n_enriched, n_blended, n_skipped_canonical, staleness, ws_w,
             )
 
     # ── LLM feature extraction (v4, non-fatal) ────────────────────────────────
