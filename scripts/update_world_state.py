@@ -787,6 +787,21 @@ async def _update_all(
 
                 features = compute_features(canonical_events, structural, entity)
 
+                # Relation extraction from headlines (Phase 4, non-fatal)
+                if canonical_events:
+                    try:
+                        from data_layer.relation_extractor import extract_and_write
+                        headlines = [
+                            getattr(ev, "raw_title", "") or getattr(ev, "title", "")
+                            for ev in canonical_events
+                            if getattr(ev, "raw_title", "") or getattr(ev, "title", "")
+                        ]
+                        n_rel = extract_and_write(headlines, name, use_llm=False)
+                        if n_rel:
+                            logger.debug("relation_extractor: %d new relations for %s", n_rel, name)
+                    except Exception as exc:
+                        logger.debug("relation extraction skipped for %s: %s", name, exc)
+
                 # Identify sources actually used
                 sources = list({getattr(ev, "source", "?") for ev in raw_events})
                 if structural:

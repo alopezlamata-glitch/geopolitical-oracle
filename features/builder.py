@@ -355,6 +355,21 @@ def build_features(
         except Exception as e:
             logger.debug("neighbor context injection skipped: %s", e)
 
+    # ── Entity relation features (Phase 4 world model) ───────────────────────
+    # Inject tenure, conflict status, sanctions, and investigation flags
+    # derived from the persistent entity_relations_temporal graph.
+    # These are non-event features: they capture structural/role state.
+    if country:
+        try:
+            from world_state.relation_reader import get_country_relation_features
+            rel_feats = get_country_relation_features(country)
+            if rel_feats:
+                for k, v in rel_feats.items():
+                    if feat.get(k, 0.0) == 0.0:  # don't overwrite event-derived signals
+                        feat[k] = v
+        except Exception as e:
+            logger.debug("relation features skipped: %s", e)
+
     # ── LLM feature extraction (v4, non-fatal) ────────────────────────────────
     # These 6 features are NOT in _FEATURE_NAMES so the v3 XGBoost ignores them.
     # They are stored alongside v3 features in feature_snapshots for v4 training.
